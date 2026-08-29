@@ -151,8 +151,26 @@ by the flake but not built — Cachix's free tier is 5 GB, and the hermes closur
 is ~3.3 GiB before compression, so a second target needs checking against the
 quota rather than assuming.
 
+## Acknowledgements
+
+The shape of this repo — a thin public flake whose CI builds into a Cachix cache
+— was learned from [`ryoppippi/nix-claude-code`](https://github.com/ryoppippi/nix-claude-code),
+which does the same job for Claude Code. No code was taken from it; the two
+flakes and their workflows have little in common, because the underlying builds
+are nothing alike. Claude Code ships an official prebuilt binary, so that flake
+repackages a download. hermes-agent ships source, so this one caches a real
+40-minute compile. Worth reading if you want the pattern applied to something
+that builds quickly.
+
 ## Licence
 
-This repo contains no upstream code — only a flake that references it. hermes-agent
-is licensed by [NousResearch](https://github.com/NousResearch/hermes-agent); its
-terms govern everything this cache distributes.
+This repo is MIT licensed — see [LICENSE](./LICENSE). That covers the flake and
+the workflows, which is all the original work here.
+
+**What the cache distributes is separate and matters more.** Anything pulled from
+`nix-hermes-agent.cachix.org` is a *build artefact of*
+[`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent),
+which is MIT licensed. Its terms — including the requirement to keep the
+copyright and permission notice with copies — govern those binaries, not this
+repo's licence. Nothing here relicenses, vendors or modifies upstream code; the
+flake references a rev and the CI compiles it unchanged.
