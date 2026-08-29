@@ -1,0 +1,59 @@
+# Build the cached targets and push them to Cachix.
+#
+# This lives in a PUBLIC repository on purpose. Public repos get 4-CPU / 16 GB
+# runners with unlimited free minutes, and Cachix's free 5 GB tier is
+# open-source only. The identical build inside a private consumer repo would get
+# 2 CPU / 8 GB and spend a metered minute budget.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Called by update.yaml right after it moves the pin — see the note there.
+  workflow_call:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # hermes' closure is ~3.3 GiB, and getting there unpacks several hundred
+      # npm and PyPI sources, against a runner image that leaves roughly 14 GB
+      # free. Reclaiming the preinstalled SDKs is what keeps this from failing on
+      # disk rather than on anything interesting.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          # Skipped: slow (several minutes of apt work) and unnecessary once the
+          # tool cache is gone. Turn on if a build ever does run out of space.
+          large-packages: false
+
+      - uses: cachix/install-nix-action@v31.11.1
+
+      # Must come BEFORE the build. The action records the store contents up
+      # front and pushes whatever appeared by the end of the job. On pull
+      # requests from forks the secret is absent and it degrades to pull-only,
+      # which is the intended behaviour rather than a failure.
+      - uses: cachix/cachix-action@v17
+        with:
+          name: nix-hermes-agent
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # `messaging` — not `default` — is the variant the consumer asks for
+      # (Iris: `modules/hermes/default.nix`, `.packages.${system}.messaging`).
+      # They are different derivations, so caching `default` here would build
+      # 3 GiB that nothing ever pulls.
+      #
+      # No `--max-jobs` cap: this runner has 16 GB against the 7.7 GB box that
+      # needs the cap. If a run ever dies on memory, `--max-jobs 2` is the first
+      # thing to try, and it is worth recording that it happened.
+      - name: Build messaging (x86_64-linux)
+        run: nix build -L '.#messaging'

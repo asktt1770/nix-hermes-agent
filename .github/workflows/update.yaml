@@ -1,0 +1,53 @@
+# Move the hermes-agent pin forward, then rebuild — in that order, same run.
+#
+# The rebuild is a job in THIS workflow rather than a reaction to the commit,
+# because a push made with GITHUB_TOKEN deliberately does not trigger other
+# workflows. Left to `on: push`, build.yaml would never fire, the pin would
+# advance, and the cache would go stale against it without anything failing.
+# A stale cache is invisible: the consumer just quietly builds for an hour.
+name: update
+
+on:
+  schedule:
+    # Weekly. Upstream releases roughly that often, and every bump costs a full
+    # rebuild — hourly checks (what nix-claude-code does) suit a flake that only
+    # repackages a prebuilt binary, not one that compiles for ~40 minutes.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31.11.1
+
+      - id: update
+        name: Update the hermes-agent pin
+        run: |
+          nix flake update hermes-agent
+          if git diff --quiet -- flake.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: update hermes-agent pin' -- flake.lock
+          git push
+
+  # Only after the commit has landed, so the cache is populated for a pin that
+  # actually exists on main.
+  build:
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    uses: ./.github/workflows/build.yaml
+    secrets: inherit
