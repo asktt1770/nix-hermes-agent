@@ -9,9 +9,11 @@ name: update
 
 on:
   schedule:
-    # Weekly. Upstream releases roughly that often, and every bump costs a full
-    # rebuild — hourly checks (what nix-claude-code does) suit a flake that only
-    # repackages a prebuilt binary, not one that compiles for ~40 minutes.
+    # Weekly, which is about the tag cadence upstream keeps (30 releases in the
+    # five and a half months to 2026-08-27, so one every ~6 days). Every bump
+    # costs a full ~21-minute rebuild, so hourly checks — what nix-claude-code
+    # does — suit a flake that only repackages a prebuilt binary, not one that
+    # compiles from source.
     - cron: "0 3 * * 1"
   workflow_dispatch:
 
@@ -27,21 +29,43 @@ jobs:
       - uses: cachix/install-nix-action@v31.11.1
 
       - id: update
-        name: Update the hermes-agent pin
+        name: Pin the newest upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # `releases/latest` rather than a sorted `git ls-remote`: upstream's
+          # tag namespace also holds non-release refs (`backup/…`,
+          # `premerge-oh-god`) that a version sort has no way to tell apart.
+          tag=$(gh api repos/NousResearch/hermes-agent/releases/latest --jq .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          sed -i "s|hermes-agent.url = \"github:NousResearch/hermes-agent[^\"]*\"|hermes-agent.url = \"github:NousResearch/hermes-agent/${tag}\"|" flake.nix
+
+          # A sed that matched nothing would leave the old ref in place and the
+          # run would report "nothing to update" — the same silent staleness the
+          # header of this file is about. Make it a failure instead.
+          grep -qF "github:NousResearch/hermes-agent/${tag}\"" flake.nix || {
+            echo "::error::could not rewrite the hermes-agent ref in flake.nix"
+            exit 1
+          }
+
           nix flake update hermes-agent
-          if git diff --quiet -- flake.lock; then
+
+          if git diff --quiet -- flake.nix flake.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Both files, always together. flake.nix carries the tag and flake.lock
+      # the rev it resolved to; committing one without the other leaves the repo
+      # claiming a release it has not locked.
       - name: Commit and push
         if: steps.update.outputs.changed == 'true'
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'chore: update hermes-agent pin' -- flake.lock
+          git commit -m "chore: pin hermes-agent ${{ steps.update.outputs.tag }}" -- flake.nix flake.lock
           git push
 
   # Only after the commit has landed, so the cache is populated for a pin that

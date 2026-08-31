@@ -77,11 +77,11 @@ changing the hash.
 
 ```nix
 # Correct — upstream builds against the nixpkgs it pins internally
-hermes-agent.url = "github:NousResearch/hermes-agent";
+hermes-agent.url = "github:NousResearch/hermes-agent/v2026.8.27";
 
 # Breaks the cache completely
 hermes-agent = {
-  url = "github:NousResearch/hermes-agent";
+  url = "github:NousResearch/hermes-agent/v2026.8.27";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 ```
@@ -100,20 +100,44 @@ then it would be 3 GiB of cache nobody pulls.
 
 ## Updates
 
-`update.yaml` runs weekly, moves `flake.lock` forward and, in the same run,
-rebuilds and pushes. The rebuild is chained rather than triggered by the commit
-because pushes made with `GITHUB_TOKEN` do not start other workflows — the cache
-would otherwise go stale silently every time the pin moved.
+`update.yaml` runs weekly. It resolves upstream's newest **tagged release**,
+rewrites the ref in `flake.nix`, re-locks, and — in the same run — rebuilds and
+pushes. The rebuild is chained rather than triggered by the commit because
+pushes made with `GITHUB_TOKEN` do not start other workflows; the cache would
+otherwise go stale silently every time the pin moved.
 
-Order matters when taking an update: let this repo build first, then move the
-consumer's pin. The reverse asks the consumer for paths nothing has built yet,
-which is not an error — the consumer builds them, slowly, exactly as before.
+### Why a tag and not `main`
+
+The input carries an explicit ref (`…/hermes-agent/v2026.8.27`) rather than
+tracking the default branch. Upstream merges to `main` far faster than it tags —
+thousands of commits a month against a release every six days or so — so an
+unpinned URL caches whichever mid-development commit the Monday 03:00 job lands
+on. Nothing is wrong with those commits except that upstream never declared them
+shippable, and there is no reason for the cache to be the thing that finds out.
+
+Tracking tags does *not* meaningfully reduce the update rate. Upstream tagged 30
+releases in the five and a half months to 2026-08-27 — one every 5.7 days — so
+the weekly job usually still has something to take.
+
+Nor is there a "wait for a major version" option, which is the obvious next
+question. Upstream has two version numbers and neither offers one: the git tags
+are CalVer (`v2026.8.27`, so the major is the year), and `pyproject.toml` is
+still on `0.x` (`0.20.6`), where SemVer puts breaking changes in the minor.
+Gating on the minor would mean updating every ~9 days, which is the weekly job
+with extra steps.
+
+### Order of operations
+
+Let this repo build first, then move the consumer's pin. The reverse asks the
+consumer for paths nothing has built yet, which is not an error — the consumer
+builds them, slowly, exactly as before.
 
 ## The hash match is already verified
 
 The whole design rests on one claim: a path built here is byte-identical to the
 path the consumer asks for. That was checked against a host already running
-hermes, before any CI existed.
+hermes, before any CI existed. The transcript below is from `0.20.5`, which is
+what was pinned at the time; the pin has since moved to `0.20.6`.
 
 ```console
 $ nix eval --raw '.#packages.x86_64-linux.messaging'
@@ -123,12 +147,15 @@ $ ssh <host> 'nix path-info -Sh /nix/store/ywxc4dicfbzxj3xmr30yb236vqvfjvdi-herm
 /nix/store/ywxc4dicfbzxj3xmr30yb236vqvfjvdi-hermes-agent-0.20.5    3.3 GiB
 ```
 
-Same path. It works because `hermes-agent` carries its own nixpkgs pin
-(`0954f7ee2f6b` at the rev locked here) and this flake adds nothing that could
-perturb it — which is the same fact both rules above are protecting.
+Same path. It works because `hermes-agent` carries its own nixpkgs pin and this
+flake adds nothing that could perturb it — which is the same fact both rules
+above are protecting. That pin is still `0954f7ee2f6b` at `v2026.8.27`, so the
+move to `0.20.6` changed the hermes rev and nothing underneath it.
 
-This check is worth repeating after any change to `flake.nix`, and it costs an
-eval rather than a build.
+Worth repeating after any *structural* change to `flake.nix` — a new input, a
+`follows`, anything reshaping `outputs`. Not after the weekly ref bump, which
+`update.yaml` makes to that file by design and which is supposed to change the
+hash. It costs an eval rather than a build.
 
 ## Setup checklist
 
