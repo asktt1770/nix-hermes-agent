@@ -53,7 +53,9 @@ updates, and a drifted pin means a 0% hit rate with no error message.
 ```nix
 nix.settings = {
   substituters = [ "https://nix-hermes-agent.cachix.org" ];
-  trusted-public-keys = [ "nix-hermes-agent.cachix.org-1:REPLACE_ME" ];
+  trusted-public-keys = [
+    "nix-hermes-agent.cachix.org-1:D9N+4J9YbUXja5rg6B3d/BbL+ivPkTakLspqkACRhCQ="
+  ];
 };
 ```
 
@@ -132,11 +134,12 @@ eval rather than a build.
 
 Not yet done — the cache does not exist until these are:
 
-- [ ] Create the `nix-hermes-agent` cache at [app.cachix.org](https://app.cachix.org)
-- [ ] Add `CACHIX_AUTH_TOKEN` to this repo's Actions secrets (a **write** token)
-- [ ] Replace `REPLACE_ME` with the real public key — in `flake.nix` (`nixConfig`)
-      and in step 2 above
-- [ ] Run `build` once via `workflow_dispatch` and confirm paths land in the cache
+- [x] Create the `nix-hermes-agent` cache at [app.cachix.org](https://app.cachix.org) — public, Cachix-managed signing
+- [x] Record the public signing key, in `flake.nix` (`nixConfig`) and in step 2 above
+- [ ] Add `CACHIX_AUTH_TOKEN` to this repo's Actions secrets — a **per-cache
+      write** token from the cache's own Settings, not a personal token, which
+      would carry account-wide access into CI
+- [ ] Run `build` once and confirm paths land in the cache
 - [ ] Switch the consumer's input and add the substituter
 
 Only after a green run is any of this load-bearing. The first run is also the

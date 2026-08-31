@@ -23,10 +23,10 @@
   # The README carries that snippet.
   nixConfig = {
     extra-substituters = [ "https://nix-hermes-agent.cachix.org" ];
+    # Cachix-managed signing key. Public by design — it verifies signatures, it
+    # does not create them, and pushing needs the separate auth token.
     extra-trusted-public-keys = [
-      # TODO: replace after creating the cache — `cachix generate-keypair` prints
-      # it, and app.cachix.org shows it on the cache page.
-      "nix-hermes-agent.cachix.org-1:REPLACE_ME"
+      "nix-hermes-agent.cachix.org-1:D9N+4J9YbUXja5rg6B3d/BbL+ivPkTakLspqkACRhCQ="
     ];
   };
 
