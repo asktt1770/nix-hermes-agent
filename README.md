@@ -144,12 +144,32 @@ experiment: a public runner has never built this closure, and the failure modes
 worth distinguishing are out-of-memory (drop to `--max-jobs 2`) and out-of-disk
 (turn on `large-packages` in the free-disk-space step).
 
-## What is cached
+## What is cached, and what it costs
 
-`packages.x86_64-linux.messaging` only. Other systems and variants are exported
-by the flake but not built — Cachix's free tier is 5 GB, and the hermes closure
-is ~3.3 GiB before compression, so a second target needs checking against the
-quota rather than assuming.
+`packages.x86_64-linux.messaging` only — the one target a consumer asks for.
+Other systems and variants stay exported but unbuilt because nothing pulls them,
+not because of the quota.
+
+The quota is nowhere near the constraint it looks like. Cachix does not store
+anything already served by `cache.nixos.org`, and most of a hermes closure is
+exactly that — CPython, glibc, node, the usual base:
+
+| | paths | size |
+| --- | --- | --- |
+| closure | 551 | 3.29 GiB |
+| already on `cache.nixos.org`, skipped | 430 | 2.89 GiB |
+| **actually stored** | **121** | **0.40 GiB** uncompressed |
+| the same, at the 3.61x compression measured on this closure | | **~115 MiB** |
+
+So one version costs roughly 115 MiB of the free 5 GB tier — call it 40
+versions, most of a year at the weekly update cadence. Ageing them out needs no
+policy either: Cachix evicts least-recently-used entries at the limit, and the
+only version anyone pulls is whichever one the consumer currently pins.
+
+Measured with `nix path-info -r` over the closure plus a narinfo probe against
+cache.nixos.org, and the compression ratio sampled from the 430 paths that are
+already there. The exact compressed figure appears in this cache's own narinfo
+after the first push.
 
 ## Acknowledgements
 
