@@ -136,16 +136,18 @@ Not yet done — the cache does not exist until these are:
 
 - [x] Create the `nix-hermes-agent` cache at [app.cachix.org](https://app.cachix.org) — public, Cachix-managed signing
 - [x] Record the public signing key, in `flake.nix` (`nixConfig`) and in step 2 above
-- [ ] Add `CACHIX_AUTH_TOKEN` to this repo's Actions secrets — a **per-cache
+- [x] Add `CACHIX_AUTH_TOKEN` to this repo's Actions secrets — a **per-cache
       write** token from the cache's own Settings, not a personal token, which
       would carry account-wide access into CI
-- [ ] Run `build` once and confirm paths land in the cache
+- [x] Run `build` once and confirm paths land in the cache
 - [ ] Switch the consumer's input and add the substituter
 
-Only after a green run is any of this load-bearing. The first run is also the
-experiment: a public runner has never built this closure, and the failure modes
-worth distinguishing are out-of-memory (drop to `--max-jobs 2`) and out-of-disk
-(turn on `large-packages` in the free-disk-space step).
+The first run was also the experiment, since no public runner had built this
+closure before. It succeeded in 21 minutes with `--max-jobs` left at the runner
+default, against a host that needs 55 for the same work. Neither failure mode
+that was expected turned up, so both remedies are still untried: out-of-memory
+would call for `--max-jobs 2`, out-of-disk for `large-packages: true` in the
+free-disk-space step.
 
 ## What is cached, and what it costs
 
@@ -161,18 +163,16 @@ exactly that — CPython, glibc, node, the usual base:
 | --- | --- | --- |
 | closure | 551 | 3.29 GiB |
 | already on `cache.nixos.org`, skipped | 430 | 2.89 GiB |
-| **actually stored** | **121** | **0.40 GiB** uncompressed |
-| the same, at the 3.61x compression measured on this closure | | **~115 MiB** |
+| **actually stored here** | **121** | **409.3 MiB** uncompressed |
+| the same, compressed 3.74x | | **109.6 MiB** |
 
-So one version costs roughly 115 MiB of the free 5 GB tier — call it 40
-versions, most of a year at the weekly update cadence. Ageing them out needs no
+So one version costs about 110 MiB of the free 5 GB tier — roughly 45 of them,
+comfortably past a year at the weekly update cadence. Ageing them out needs no
 policy either: Cachix evicts least-recently-used entries at the limit, and the
 only version anyone pulls is whichever one the consumer currently pins.
 
-Measured with `nix path-info -r` over the closure plus a narinfo probe against
-cache.nixos.org, and the compression ratio sampled from the 430 paths that are
-already there. The exact compressed figure appears in this cache's own narinfo
-after the first push.
+These are read from this cache's own narinfo after the first push (`NarSize` and
+`FileSize` over the closure), not estimated.
 
 ## Acknowledgements
 
@@ -182,7 +182,7 @@ which does the same job for Claude Code. No code was taken from it; the two
 flakes and their workflows have little in common, because the underlying builds
 are nothing alike. Claude Code ships an official prebuilt binary, so that flake
 repackages a download. hermes-agent ships source, so this one caches a real
-40-minute compile. Worth reading if you want the pattern applied to something
+21-minute compile. Worth reading if you want the pattern applied to something
 that builds quickly.
 
 ## Licence
