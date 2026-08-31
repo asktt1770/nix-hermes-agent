@@ -6,10 +6,23 @@
 # 2 CPU / 8 GB and spend a metered minute budget.
 name: build
 
+# Filtered to the files that decide what gets built and how. Without this a
+# docs-only commit spends 21 minutes reproducing a store path already sitting in
+# the cache. `paths` is absent from the two triggers below it because GitHub
+# ignores the key there — which is what keeps update.yaml's chained call, and a
+# manual re-run, building unconditionally.
 on:
   push:
     branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/build.yaml
   pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/build.yaml
   workflow_dispatch:
   # Called by update.yaml right after it moves the pin — see the note there.
   workflow_call:

@@ -132,6 +132,11 @@ Let this repo build first, then move the consumer's pin. The reverse asks the
 consumer for paths nothing has built yet, which is not an error — the consumer
 builds them, slowly, exactly as before.
 
+`build.yaml` is filtered to `flake.nix`, `flake.lock` and its own file. Editing
+this README does not spend 21 minutes rebuilding a closure that is already
+cached. `workflow_dispatch` and `workflow_call` ignore `paths`, so the chained
+build after an update always runs.
+
 ## The hash match is already verified
 
 The whole design rests on one claim: a path built here is byte-identical to the
