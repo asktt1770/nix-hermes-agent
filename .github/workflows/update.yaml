@@ -9,11 +9,11 @@ name: update
 
 on:
   schedule:
-    # Weekly, which is about the tag cadence upstream keeps (30 releases in the
-    # five and a half months to 2026-08-27, so one every ~6 days). Every bump
-    # costs a full ~21-minute rebuild, so hourly checks — what nix-claude-code
-    # does — suit a flake that only repackages a prebuilt binary, not one that
-    # compiles from source.
+    # Weekly, which is about the tag cadence upstream keeps: 30 releases in the
+    # five and a half months to 2026-08-27, one every 5.8 days. Matching that
+    # rate keeps each run to the dozen-odd derivations a version bump actually
+    # changes; checking hourly would spend a runner to learn nothing, and
+    # checking monthly would let the diff grow back towards a cold build.
     - cron: "0 3 * * 1"
   workflow_dispatch:
 

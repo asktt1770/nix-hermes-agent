@@ -182,10 +182,12 @@ Let this repo build first, then move the consumer's pin. The reverse asks the
 consumer for paths nothing has built yet, which is not an error — the consumer
 builds them, slowly, exactly as before.
 
-`build.yaml` is filtered to `flake.nix`, `flake.lock` and its own file. Editing
-this README does not spend 21 minutes rebuilding a closure that is already
-cached. `workflow_dispatch` and `workflow_call` ignore `paths`, so the chained
-build after an update always runs.
+`build.yaml` is filtered to `flake.nix`, `flake.lock` and its own file, so
+editing this README starts no run. That saves less than it sounds like — a
+no-op rebuild is 1m48s, not the 21 minutes the first one took — and the real
+gain is that the run history stays a record of closure changes.
+`workflow_dispatch` and `workflow_call` ignore `paths`, so the chained build
+after an update always runs.
 
 ## The hash match is already verified
 
@@ -235,6 +237,27 @@ that was expected turned up, so both remedies are still untried: out-of-memory
 would call for `--max-jobs 2`, out-of-disk for `large-packages: true` in the
 free-disk-space step.
 
+### Where the time actually goes
+
+That 21 minutes is a cold-cache number and does not describe an update. Three
+runs, measured:
+
+| run | total | `nix build` | derivations built |
+| --- | --- | --- | --- |
+| first ever, `0.20.5`, empty cache | 21m01s | 4m41s | 1038 |
+| bump to `0.20.6`, cache warm | 3m10s | 2m16s | **12** |
+| same closure again, nothing to do | 1m48s | 46s | 0 |
+
+Two things follow. The compile was never the expensive part of the first run —
+**14m21s of the 21 went to uploading** 409 MiB to Cachix, which happens once.
+And a version bump rebuilds a dozen derivations, not a thousand, because the
+hundreds of npm and PyPI fetches a hermes closure needs carry over unchanged
+between adjacent releases.
+
+So the weekly cadence is close to free, and it is self-reinforcing: the longer
+the gap between updates, the more of the closure has moved and the closer the
+run gets to the cold-cache case.
+
 ## What is cached, and what it costs
 
 `packages.x86_64-linux.messaging` only — the one target a consumer asks for.
@@ -252,13 +275,19 @@ exactly that — CPython, glibc, node, the usual base:
 | **actually stored here** | **121** | **409.3 MiB** uncompressed |
 | the same, compressed 3.74x | | **109.6 MiB** |
 
-So one version costs about 110 MiB of the free 5 GB tier — roughly 45 of them,
-comfortably past a year at the weekly update cadence. Ageing them out needs no
-policy either: Cachix evicts least-recently-used entries at the limit, and the
-only version anyone pulls is whichever one the consumer currently pins.
+So the *first* version cost about 110 MiB of the free 5 GB tier — roughly 45 of
+them if every version cost the same. None of the later ones do: the bump to
+`0.20.6` rebuilt 12 derivations, the rest of the closure being npm and PyPI
+fetches that carry over between adjacent releases. The real headroom is
+therefore well past 45 versions, by an amount not worth measuring precisely
+while the answer is "not the constraint".
 
-These are read from this cache's own narinfo after the first push (`NarSize` and
-`FileSize` over the closure), not estimated.
+Ageing them out needs no policy either: Cachix evicts least-recently-used
+entries at the limit, and the only version anyone pulls is whichever one the
+consumer currently pins.
+
+The table is read from this cache's own narinfo after the first push (`NarSize`
+and `FileSize` over the closure), not estimated.
 
 ## Acknowledgements
 
@@ -268,8 +297,8 @@ which does the same job for Claude Code. No code was taken from it; the two
 flakes and their workflows have little in common, because the underlying builds
 are nothing alike. Claude Code ships an official prebuilt binary, so that flake
 repackages a download. hermes-agent ships source, so this one caches a real
-21-minute compile. Worth reading if you want the pattern applied to something
-that builds quickly.
+compile — 1038 derivations and 409 MiB of cache on the first run. Worth reading
+if you want the pattern applied to something that builds quickly.
 
 ## Licence
 
