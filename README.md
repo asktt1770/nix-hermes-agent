@@ -35,9 +35,21 @@ identity files.
 
 ### 1. Point your flake at this repo instead of upstream
 
+Pick a branch. The two differ only in how often they move:
+
 ```nix
+# Every upstream release — one every ~6 days
 inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent";
+
+# Milestones only — one every ~13 days lately, and lengthening
+inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent/minor";
 ```
+
+Both are built and pushed to the same cache, so neither is faster to install;
+`minor` trades freshness for fewer rebuild-and-switch cycles on the consuming
+host. The choice is made once — `nix flake update` follows whichever branch the
+URL names from then on, with nothing to bump by hand. Switching later is the
+same one-word edit.
 
 The outputs are re-exported verbatim (`packages`, `nixosModules`,
 `homeManagerModules`, `overlays`), so this is a drop-in swap — nothing else in a
@@ -122,9 +134,47 @@ the weekly job usually still has something to take.
 Nor is there a "wait for a major version" option, which is the obvious next
 question. Upstream has two version numbers and neither offers one: the git tags
 are CalVer (`v2026.8.27`, so the major is the year), and `pyproject.toml` is
-still on `0.x` (`0.20.6`), where SemVer puts breaking changes in the minor.
-Gating on the minor would mean updating every ~9 days, which is the weekly job
-with extra steps.
+still on `0.x` (`0.20.6`), where SemVer puts breaking changes in the minor. The
+minor is therefore the nearest thing to a milestone, and it is what the `minor`
+branch follows.
+
+### The two branches
+
+`main` takes every release. `minor` takes only the ones where upstream's minor
+version moved. Nothing else separates them: `minor` always points at a commit
+`main` already passed through, so promoting it is a fast-forward, and it costs
+no build — the closure went to Cachix when `main` took the same commit, and the
+cache is keyed by store path rather than by branch.
+
+Detecting a milestone needs the semver, because nothing cheaper works. The
+CalVer tag is a date and says nothing. The release *title* looks promising and
+is not: `0.15.1` shipped as "The Patch Release" while `0.20.0`, `0.17.0` and
+`0.14.0` — all genuine minor bumps — shipped with no nickname at all. So
+`update.yaml` reads `pyproject.toml` at the old and new tags and compares the
+version with its patch component dropped (`0.20.6` → `0.20`). An unchanged value
+is a patch; a changed one is a milestone. A future `1.0.0` reads as `1.0` and
+promotes, which is what you would want.
+
+If either read comes back empty the run fails rather than reporting "patch" — a
+broken API call and a quiet month upstream are indistinguishable from the
+outside, and the second one silently freezes the conservative channel.
+
+`promote` waits for `build` to go green. `main` does not, by design: it is the
+channel that finds out. `minor` should never point a consumer at a pin whose
+closure failed to compile.
+
+Cadence, measured over all 30 upstream releases from `0.2.0` to `0.20.6`
+(2026-03-12 to 2026-08-27):
+
+| | interval |
+| --- | --- |
+| every release (`main`) | 5.8 days |
+| milestones, whole span | 8.0 days |
+| milestones, last six | **13.4 days** |
+
+The gap has widened steadily — 5 days between the March milestones, 14 between
+the last two — and `0.21.0` had still not landed 29 days after `0.20.0`. The
+`minor` branch is worth more now than its lifetime average suggests.
 
 ### Order of operations
 
@@ -172,6 +222,10 @@ Not yet done — the cache does not exist until these are:
       write** token from the cache's own Settings, not a personal token, which
       would carry account-wide access into CI
 - [x] Run `build` once and confirm paths land in the cache
+- [ ] Create the `minor` branch once, from `main` — `git push origin main:minor`.
+      `update.yaml` only ever fast-forwards it, so until upstream's next
+      milestone it has nothing to create, and a consumer pointing at `/minor`
+      would fail to resolve
 - [ ] Switch the consumer's input and add the substituter
 
 The first run was also the experiment, since no public runner had built this

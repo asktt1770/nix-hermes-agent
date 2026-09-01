@@ -24,6 +24,8 @@ jobs:
       contents: write
     outputs:
       changed: ${{ steps.update.outputs.changed }}
+      milestone: ${{ steps.update.outputs.milestone }}
+      sha: ${{ steps.push.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31.11.1
@@ -39,6 +41,11 @@ jobs:
           tag=$(gh api repos/NousResearch/hermes-agent/releases/latest --jq .tag_name)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+          # Read before the rewrite below overwrites it. Empty on the first run
+          # after the ref was introduced, which the milestone test treats as
+          # "cannot tell" rather than guessing.
+          old_tag=$(sed -n 's|.*hermes-agent\.url = "github:NousResearch/hermes-agent/\([^"]*\)".*|\1|p' flake.nix)
+
           sed -i "s|hermes-agent.url = \"github:NousResearch/hermes-agent[^\"]*\"|hermes-agent.url = \"github:NousResearch/hermes-agent/${tag}\"|" flake.nix
 
           # A sed that matched nothing would leave the old ref in place and the
@@ -53,20 +60,60 @@ jobs:
 
           if git diff --quiet -- flake.nix flake.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          # Is this a milestone? The CalVer tag cannot say — `v2026.8.27` carries
+          # no more meaning than a date, and the release title is no better,
+          # since `0.15.1` shipped as "The Patch Release" while `0.20.0` shipped
+          # with no nickname at all. The semver in pyproject.toml is the only
+          # honest signal, and there the milestone is the minor: upstream is on
+          # `0.x`, where SemVer puts breaking changes.
+          #
+          # Dropping the patch component leaves that identity — `0.20.6` -> `0.20`
+          # — so an unchanged value means a patch and a changed one a milestone.
+          # A future `1.0.0` reads as `1.0` and promotes, which is correct.
+          version_at() {
+            gh api "repos/NousResearch/hermes-agent/contents/pyproject.toml?ref=$1" \
+              -H "Accept: application/vnd.github.raw" |
+              sed -n 's/^version = "\(.*\)"/\1/p' | head -1
+          }
+
+          new_version=$(version_at "$tag")
+          old_version=""
+          if [ -n "$old_tag" ]; then
+            old_version=$(version_at "$old_tag")
+          fi
+
+          # An empty read is a broken API call, not a patch release. Left
+          # unchecked it reports "patch", freezes the minor channel, and looks
+          # from the outside exactly like a quiet month upstream.
+          if [ -z "$new_version" ] || { [ -n "$old_tag" ] && [ -z "$old_version" ]; }; then
+            echo "::error::could not read upstream's version at ${old_tag:-<none>} / ${tag}"
+            exit 1
+          fi
+
+          if [ -n "$old_version" ] && [ "${new_version%.*}" != "${old_version%.*}" ]; then
+            echo "milestone=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$old_version -> $new_version is a milestone; the minor channel will follow"
           else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "milestone=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$old_version -> $new_version is a patch; the minor channel stays put"
           fi
 
       # Both files, always together. flake.nix carries the tag and flake.lock
       # the rev it resolved to; committing one without the other leaves the repo
       # claiming a release it has not locked.
-      - name: Commit and push
+      - id: push
+        name: Commit and push
         if: steps.update.outputs.changed == 'true'
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m "chore: pin hermes-agent ${{ steps.update.outputs.tag }}" -- flake.nix flake.lock
           git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   # Only after the commit has landed, so the cache is populated for a pin that
   # actually exists on main.
@@ -75,3 +122,35 @@ jobs:
     if: needs.update.outputs.changed == 'true'
     uses: ./.github/workflows/build.yaml
     secrets: inherit
+
+  # `main` takes every release; `minor` takes only the milestones. A consumer
+  # chooses between them with one word in its flake URL:
+  #
+  #   github:asktt1770/nix-hermes-agent          -> every release
+  #   github:asktt1770/nix-hermes-agent/minor    -> milestones only
+  #
+  # A branch rather than a tag or a marker file because a branch is the only one
+  # of the three a consumer picks once — `nix flake update` then follows it on
+  # its own, with nothing to bump by hand and no tooling to write.
+  #
+  # `minor` only ever points at a commit `main` already passed through, so this
+  # is a fast-forward and needs no force. It costs no build either: the closure
+  # was pushed to Cachix when `main` took the same commit, and the cache is keyed
+  # by store path, not by branch.
+  #
+  # After `build`, not alongside it. `minor` is the conservative channel, so it
+  # should never point a consumer at a pin whose closure failed to compile.
+  # `build` being skipped skips this too, which is the intended reading of
+  # "nothing changed".
+  promote:
+    needs: [update, build]
+    if: needs.update.outputs.milestone == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The exact commit `update` pushed, not whatever `main` has drifted to.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.update.outputs.sha }}
+      - run: git push origin HEAD:refs/heads/minor
