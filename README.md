@@ -118,6 +118,21 @@ pushes. The rebuild is chained rather than triggered by the commit because
 pushes made with `GITHUB_TOKEN` do not start other workflows; the cache would
 otherwise go stale silently every time the pin moved.
 
+The deciding is done by [`update.nu`](./update.nu), not by shell inside the
+workflow, so it can be read and run on its own:
+
+```console
+$ ./update.nu --dry-run
+pinned:    v2026.8.27 (0.20.6)
+latest:    v2026.8.31 (0.21.0)
+milestone: true
+```
+
+The shebang pulls nushell from the flake registry rather than with
+`nix shell --inputs-from .`, because this flake has no `nixpkgs` input to hand
+over. Nothing the script runs in reaches a store path, so leaving it unpinned
+cannot perturb what gets cached.
+
 ### Why a tag and not `main`
 
 The input carries an explicit ref (`…/hermes-agent/v2026.8.27`) rather than
@@ -146,18 +161,26 @@ version moved. Nothing else separates them: `minor` always points at a commit
 no build — the closure went to Cachix when `main` took the same commit, and the
 cache is keyed by store path rather than by branch.
 
-Detecting a milestone needs the semver, because nothing cheaper works. The
-CalVer tag is a date and says nothing. The release *title* looks promising and
-is not: `0.15.1` shipped as "The Patch Release" while `0.20.0`, `0.17.0` and
-`0.14.0` — all genuine minor bumps — shipped with no nickname at all. So
-`update.yaml` reads `pyproject.toml` at the old and new tags and compares the
-version with its patch component dropped (`0.20.6` → `0.20`). An unchanged value
-is a patch; a changed one is a milestone. A future `1.0.0` reads as `1.0` and
-promotes, which is what you would want.
+Detecting a milestone needs the semver, and the CalVer tag has none — `v2026.8.31`
+is a date. The semver is in the release *title*, which upstream's
+`scripts/release.py` writes from a format string:
 
-If either read comes back empty the run fails rather than reporting "patch" — a
-broken API call and a quiet month upstream are indistinguishable from the
-outside, and the second one silently freezes the conservative channel.
+```python
+"--title", f"Hermes Agent v{new_version} ({calver_date})",
+```
+
+So `update.nu` reads `.name` off the release, takes the version with its patch
+component dropped (`0.21.0` → `0.21`), and compares old against new. Unchanged
+is a patch; changed is a milestone. A future `1.0.0` reads as `1.0` and
+promotes, which is what you would want. All 31 releases to `v2026.8.31` parse.
+
+The *nickname* some titles carry is not the signal and cannot be: `0.15.1`
+shipped as "The Patch Release" while `0.20.0`, `0.17.0` and `0.14.0` — all
+genuine minor bumps — shipped with none. Only the generated part is load-bearing.
+
+If a title fails to parse the run fails, rather than reporting "patch". A
+changed format upstream and a quiet month upstream are indistinguishable from
+the outside, and only one of them should freeze the conservative channel.
 
 `promote` waits for `build` to go green. `main` does not, by design: it is the
 channel that finds out. `minor` should never point a consumer at a pin whose
@@ -172,9 +195,9 @@ Cadence, measured over all 30 upstream releases from `0.2.0` to `0.20.6`
 | milestones, whole span | 8.0 days |
 | milestones, last six | **13.4 days** |
 
-The gap has widened steadily — 5 days between the March milestones, 14 between
-the last two — and `0.21.0` had still not landed 29 days after `0.20.0`. The
-`minor` branch is worth more now than its lifetime average suggests.
+The gap has widened steadily: 5 days between the March milestones, then 14, then
+`0.21.0` landing 28 days after `0.20.0` on 2026-08-31. The `minor` branch is
+worth more now than its lifetime average suggests.
 
 ### Order of operations
 

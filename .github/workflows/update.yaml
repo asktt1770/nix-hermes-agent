@@ -5,6 +5,11 @@
 # workflows. Left to `on: push`, build.yaml would never fire, the pin would
 # advance, and the cache would go stale against it without anything failing.
 # A stale cache is invisible: the consumer just quietly builds for an hour.
+#
+# Which release to pin, and whether it is a milestone, are decided by
+# ./update.nu. It lives outside this file so it can be run and read on its own —
+# `./update.nu --dry-run` answers both questions without writing anything, where
+# shell embedded in a workflow can only ever be exercised by pushing it.
 name: update
 
 on:
@@ -30,77 +35,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31.11.1
 
+      # Writes changed / tag / milestone to $GITHUB_OUTPUT.
       - id: update
         name: Pin the newest upstream release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # `releases/latest` rather than a sorted `git ls-remote`: upstream's
-          # tag namespace also holds non-release refs (`backup/…`,
-          # `premerge-oh-god`) that a version sort has no way to tell apart.
-          tag=$(gh api repos/NousResearch/hermes-agent/releases/latest --jq .tag_name)
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-          # Read before the rewrite below overwrites it. Empty on the first run
-          # after the ref was introduced, which the milestone test treats as
-          # "cannot tell" rather than guessing.
-          old_tag=$(sed -n 's|.*hermes-agent\.url = "github:NousResearch/hermes-agent/\([^"]*\)".*|\1|p' flake.nix)
-
-          sed -i "s|hermes-agent.url = \"github:NousResearch/hermes-agent[^\"]*\"|hermes-agent.url = \"github:NousResearch/hermes-agent/${tag}\"|" flake.nix
-
-          # A sed that matched nothing would leave the old ref in place and the
-          # run would report "nothing to update" — the same silent staleness the
-          # header of this file is about. Make it a failure instead.
-          grep -qF "github:NousResearch/hermes-agent/${tag}\"" flake.nix || {
-            echo "::error::could not rewrite the hermes-agent ref in flake.nix"
-            exit 1
-          }
-
-          nix flake update hermes-agent
-
-          if git diff --quiet -- flake.nix flake.lock; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-
-          # Is this a milestone? The CalVer tag cannot say — `v2026.8.27` carries
-          # no more meaning than a date, and the release title is no better,
-          # since `0.15.1` shipped as "The Patch Release" while `0.20.0` shipped
-          # with no nickname at all. The semver in pyproject.toml is the only
-          # honest signal, and there the milestone is the minor: upstream is on
-          # `0.x`, where SemVer puts breaking changes.
-          #
-          # Dropping the patch component leaves that identity — `0.20.6` -> `0.20`
-          # — so an unchanged value means a patch and a changed one a milestone.
-          # A future `1.0.0` reads as `1.0` and promotes, which is correct.
-          version_at() {
-            gh api "repos/NousResearch/hermes-agent/contents/pyproject.toml?ref=$1" \
-              -H "Accept: application/vnd.github.raw" |
-              sed -n 's/^version = "\(.*\)"/\1/p' | head -1
-          }
-
-          new_version=$(version_at "$tag")
-          old_version=""
-          if [ -n "$old_tag" ]; then
-            old_version=$(version_at "$old_tag")
-          fi
-
-          # An empty read is a broken API call, not a patch release. Left
-          # unchecked it reports "patch", freezes the minor channel, and looks
-          # from the outside exactly like a quiet month upstream.
-          if [ -z "$new_version" ] || { [ -n "$old_tag" ] && [ -z "$old_version" ]; }; then
-            echo "::error::could not read upstream's version at ${old_tag:-<none>} / ${tag}"
-            exit 1
-          fi
-
-          if [ -n "$old_version" ] && [ "${new_version%.*}" != "${old_version%.*}" ]; then
-            echo "milestone=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$old_version -> $new_version is a milestone; the minor channel will follow"
-          else
-            echo "milestone=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::$old_version -> $new_version is a patch; the minor channel stays put"
-          fi
+        run: ./update.nu
 
       # Both files, always together. flake.nix carries the tag and flake.lock
       # the rev it resolved to; committing one without the other leaves the repo
