@@ -88,26 +88,37 @@ def is-milestone [
 
 # Point flake.nix's hermes-agent input at `tag`.
 #
-# The match is anchored on the attribute so a URL mentioned in a comment cannot
-# be rewritten instead, and both halves are built from $UPSTREAM so the pattern
-# and its replacement cannot drift apart.
+# Located by whole line and rewritten by index, rather than by replacing the
+# first regex match in the file. Two things go wrong with first-match: a URL
+# quoted inside a comment above the attribute would be rewritten in its place,
+# and a second assignment appearing anywhere would be silently ignored. Either
+# leaves the real pin stale while every guard downstream reports success —
+# the silent staleness update.yaml's header is about.
+#
+# So the count is asserted instead: exactly one line, or the run fails.
 def pin-ref [
     tag: string # the release tag to pin
 ]: nothing -> nothing {
-    let rewritten = (
-        open --raw flake.nix
-        | str replace --regex $'hermes-agent\.url = "($UPSTREAM)[^"]*"'
-            $'hermes-agent.url = "($UPSTREAM)/($tag)"'
-    )
+    let source = (open --raw flake.nix)
+    let pattern = $'^\s*hermes-agent\.url = "($UPSTREAM)[^"]*";\s*$'
+    let hits = ($source | lines | enumerate | where {|entry| $entry.item =~ $pattern})
 
-    # A replace that matched nothing returns the input unchanged and reports no
-    # error, so the run would go on to find no diff and report "nothing to
-    # update" — the silent staleness update.yaml's header is about.
-    if not ($rewritten | str contains $'"($UPSTREAM)/($tag)"') {
-        error make {msg: "could not rewrite the hermes-agent ref in flake.nix"}
+    if ($hits | length) != 1 {
+        error make {msg: $"expected exactly one hermes-agent.url assignment in flake.nix, found ($hits | length)"}
     }
 
-    $rewritten | save --force flake.nix
+    let indent = ($hits.0.item | parse --regex '^(?<indent>\s*)' | get 0.indent)
+    let rewritten = (
+        $source
+        | lines
+        | update $hits.0.index $'($indent)hermes-agent.url = "($UPSTREAM)/($tag)";'
+        | str join "\n"
+    )
+
+    # `lines` drops the final newline, and putting back something the file did
+    # not have would be a diff this script did not mean to make.
+    let trailer = (if ($source | str ends-with "\n") { "\n" } else { "" })
+    $"($rewritten)($trailer)" | save --force flake.nix
 }
 
 # The bytes of the two files a pin lives in, for comparing before against after.

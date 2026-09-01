@@ -57,10 +57,19 @@ jobs:
 
   # Only after the commit has landed, so the cache is populated for a pin that
   # actually exists on main.
+  #
+  # `ref` is not optional decoration. A reusable workflow runs at the commit
+  # that started the *caller*, and the push above happened after that, so
+  # `github.sha` still names main's previous tip. Left to checkout's default
+  # this job would rebuild the old pin, find it already cached, go green in
+  # under two minutes, and leave the new pin uncached — with `promote` then
+  # advancing `minor` on the strength of it.
   build:
     needs: update
     if: needs.update.outputs.changed == 'true'
     uses: ./.github/workflows/build.yaml
+    with:
+      ref: ${{ needs.update.outputs.sha }}
     secrets: inherit
 
   # `main` takes every release; `minor` takes only the milestones. A consumer

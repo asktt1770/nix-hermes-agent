@@ -29,6 +29,16 @@ on:
   workflow_dispatch:
   # Called by update.yaml right after it moves the pin — see the note there.
   workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Commit to build. update.yaml passes the commit it has just pushed,
+          because a reusable workflow runs at the *caller's* commit: `github.sha`
+          is main's tip from before that push, so checking out the default would
+          rebuild the previous pin and report it green.
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   group: build-${{ github.ref }}
@@ -38,7 +48,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Empty for every trigger except update.yaml's call, where checkout falls
+      # back to its own default of the event's ref.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       # hermes' closure is ~3.3 GiB, and getting there unpacks several hundred
       # npm and PyPI sources, against a runner image that leaves roughly 14 GB
