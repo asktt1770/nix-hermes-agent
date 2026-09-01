@@ -35,9 +35,21 @@ identity files.
 
 ### 1. Point your flake at this repo instead of upstream
 
+Pick a branch. The two differ only in how often they move:
+
 ```nix
+# Every upstream release — one every ~6 days
 inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent";
+
+# Milestones only — one every ~13 days lately, and lengthening
+inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent/minor";
 ```
+
+Both are built and pushed to the same cache, so neither is faster to install;
+`minor` trades freshness for fewer rebuild-and-switch cycles on the consuming
+host. The choice is made once — `nix flake update` follows whichever branch the
+URL names from then on, with nothing to bump by hand. Switching later is the
+same one-word edit.
 
 The outputs are re-exported verbatim (`packages`, `nixosModules`,
 `homeManagerModules`, `overlays`), so this is a drop-in swap — nothing else in a
@@ -77,11 +89,11 @@ changing the hash.
 
 ```nix
 # Correct — upstream builds against the nixpkgs it pins internally
-hermes-agent.url = "github:NousResearch/hermes-agent";
+hermes-agent.url = "github:NousResearch/hermes-agent/v2026.8.27";
 
 # Breaks the cache completely
 hermes-agent = {
-  url = "github:NousResearch/hermes-agent";
+  url = "github:NousResearch/hermes-agent/v2026.8.27";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 ```
@@ -100,20 +112,112 @@ then it would be 3 GiB of cache nobody pulls.
 
 ## Updates
 
-`update.yaml` runs weekly, moves `flake.lock` forward and, in the same run,
-rebuilds and pushes. The rebuild is chained rather than triggered by the commit
-because pushes made with `GITHUB_TOKEN` do not start other workflows — the cache
-would otherwise go stale silently every time the pin moved.
+`update.yaml` runs weekly. It resolves upstream's newest **tagged release**,
+rewrites the ref in `flake.nix`, re-locks, and — in the same run — rebuilds and
+pushes. The rebuild is chained rather than triggered by the commit because
+pushes made with `GITHUB_TOKEN` do not start other workflows; the cache would
+otherwise go stale silently every time the pin moved.
 
-Order matters when taking an update: let this repo build first, then move the
-consumer's pin. The reverse asks the consumer for paths nothing has built yet,
-which is not an error — the consumer builds them, slowly, exactly as before.
+The deciding is done by [`update.nu`](./update.nu), not by shell inside the
+workflow, so it can be read and run on its own:
+
+```console
+$ ./update.nu --dry-run
+pinned:    v2026.8.27 (0.20.6)
+latest:    v2026.8.31 (0.21.0)
+milestone: true
+```
+
+The shebang pulls nushell from the flake registry rather than with
+`nix shell --inputs-from .`, because this flake has no `nixpkgs` input to hand
+over. Nothing the script runs in reaches a store path, so leaving it unpinned
+cannot perturb what gets cached.
+
+### Why a tag and not `main`
+
+The input carries an explicit ref (`…/hermes-agent/v2026.8.27`) rather than
+tracking the default branch. Upstream merges to `main` far faster than it tags —
+thousands of commits a month against a release every six days or so — so an
+unpinned URL caches whichever mid-development commit the Monday 03:00 job lands
+on. Nothing is wrong with those commits except that upstream never declared them
+shippable, and there is no reason for the cache to be the thing that finds out.
+
+Tracking tags does *not* meaningfully reduce the update rate. Upstream tagged 30
+releases in the five and a half months to 2026-08-27 — one every 5.7 days — so
+the weekly job usually still has something to take.
+
+Nor is there a "wait for a major version" option, which is the obvious next
+question. Upstream has two version numbers and neither offers one: the git tags
+are CalVer (`v2026.8.27`, so the major is the year), and `pyproject.toml` is
+still on `0.x` (`0.20.6`), where SemVer puts breaking changes in the minor. The
+minor is therefore the nearest thing to a milestone, and it is what the `minor`
+branch follows.
+
+### The two branches
+
+`main` takes every release. `minor` takes only the ones where upstream's minor
+version moved. Nothing else separates them: `minor` always points at a commit
+`main` already passed through, so promoting it is a fast-forward, and it costs
+no build — the closure went to Cachix when `main` took the same commit, and the
+cache is keyed by store path rather than by branch.
+
+Detecting a milestone needs the semver, and the CalVer tag has none — `v2026.8.31`
+is a date. The semver is in the release *title*, which upstream's
+`scripts/release.py` writes from a format string:
+
+```python
+"--title", f"Hermes Agent v{new_version} ({calver_date})",
+```
+
+So `update.nu` reads `.name` off the release, takes the version with its patch
+component dropped (`0.21.0` → `0.21`), and compares old against new. Unchanged
+is a patch; changed is a milestone. A future `1.0.0` reads as `1.0` and
+promotes, which is what you would want. All 31 releases to `v2026.8.31` parse.
+
+The *nickname* some titles carry is not the signal and cannot be: `0.15.1`
+shipped as "The Patch Release" while `0.20.0`, `0.17.0` and `0.14.0` — all
+genuine minor bumps — shipped with none. Only the generated part is load-bearing.
+
+If a title fails to parse the run fails, rather than reporting "patch". A
+changed format upstream and a quiet month upstream are indistinguishable from
+the outside, and only one of them should freeze the conservative channel.
+
+`promote` waits for `build` to go green. `main` does not, by design: it is the
+channel that finds out. `minor` should never point a consumer at a pin whose
+closure failed to compile.
+
+Cadence, measured over all 30 upstream releases from `0.2.0` to `0.20.6`
+(2026-03-12 to 2026-08-27):
+
+| | interval |
+| --- | --- |
+| every release (`main`) | 5.8 days |
+| milestones, whole span | 8.0 days |
+| milestones, last six | **13.4 days** |
+
+The gap has widened steadily: 5 days between the March milestones, then 14, then
+`0.21.0` landing 28 days after `0.20.0` on 2026-08-31. The `minor` branch is
+worth more now than its lifetime average suggests.
+
+### Order of operations
+
+Let this repo build first, then move the consumer's pin. The reverse asks the
+consumer for paths nothing has built yet, which is not an error — the consumer
+builds them, slowly, exactly as before.
+
+`build.yaml` is filtered to `flake.nix`, `flake.lock` and its own file, so
+editing this README starts no run. That saves less than it sounds like — a
+no-op rebuild is 1m48s, not the 21 minutes the first one took — and the real
+gain is that the run history stays a record of closure changes.
+`workflow_dispatch` and `workflow_call` ignore `paths`, so the chained build
+after an update always runs.
 
 ## The hash match is already verified
 
 The whole design rests on one claim: a path built here is byte-identical to the
 path the consumer asks for. That was checked against a host already running
-hermes, before any CI existed.
+hermes, before any CI existed. The transcript below is from `0.20.5`, which is
+what was pinned at the time; the pin has since moved to `0.20.6`.
 
 ```console
 $ nix eval --raw '.#packages.x86_64-linux.messaging'
@@ -123,12 +227,15 @@ $ ssh <host> 'nix path-info -Sh /nix/store/ywxc4dicfbzxj3xmr30yb236vqvfjvdi-herm
 /nix/store/ywxc4dicfbzxj3xmr30yb236vqvfjvdi-hermes-agent-0.20.5    3.3 GiB
 ```
 
-Same path. It works because `hermes-agent` carries its own nixpkgs pin
-(`0954f7ee2f6b` at the rev locked here) and this flake adds nothing that could
-perturb it — which is the same fact both rules above are protecting.
+Same path. It works because `hermes-agent` carries its own nixpkgs pin and this
+flake adds nothing that could perturb it — which is the same fact both rules
+above are protecting. That pin is still `0954f7ee2f6b` at `v2026.8.27`, so the
+move to `0.20.6` changed the hermes rev and nothing underneath it.
 
-This check is worth repeating after any change to `flake.nix`, and it costs an
-eval rather than a build.
+Worth repeating after any *structural* change to `flake.nix` — a new input, a
+`follows`, anything reshaping `outputs`. Not after the weekly ref bump, which
+`update.yaml` makes to that file by design and which is supposed to change the
+hash. It costs an eval rather than a build.
 
 ## Setup checklist
 
@@ -136,16 +243,43 @@ Not yet done — the cache does not exist until these are:
 
 - [x] Create the `nix-hermes-agent` cache at [app.cachix.org](https://app.cachix.org) — public, Cachix-managed signing
 - [x] Record the public signing key, in `flake.nix` (`nixConfig`) and in step 2 above
-- [ ] Add `CACHIX_AUTH_TOKEN` to this repo's Actions secrets — a **per-cache
+- [x] Add `CACHIX_AUTH_TOKEN` to this repo's Actions secrets — a **per-cache
       write** token from the cache's own Settings, not a personal token, which
       would carry account-wide access into CI
-- [ ] Run `build` once and confirm paths land in the cache
+- [x] Run `build` once and confirm paths land in the cache
+- [ ] Create the `minor` branch once, from `main` — `git push origin main:minor`.
+      `update.yaml` only ever fast-forwards it, so until upstream's next
+      milestone it has nothing to create, and a consumer pointing at `/minor`
+      would fail to resolve
 - [ ] Switch the consumer's input and add the substituter
 
-Only after a green run is any of this load-bearing. The first run is also the
-experiment: a public runner has never built this closure, and the failure modes
-worth distinguishing are out-of-memory (drop to `--max-jobs 2`) and out-of-disk
-(turn on `large-packages` in the free-disk-space step).
+The first run was also the experiment, since no public runner had built this
+closure before. It succeeded in 21 minutes with `--max-jobs` left at the runner
+default, against a host that needs 55 for the same work. Neither failure mode
+that was expected turned up, so both remedies are still untried: out-of-memory
+would call for `--max-jobs 2`, out-of-disk for `large-packages: true` in the
+free-disk-space step.
+
+### Where the time actually goes
+
+That 21 minutes is a cold-cache number and does not describe an update. Three
+runs, measured:
+
+| run | total | `nix build` | derivations built |
+| --- | --- | --- | --- |
+| first ever, `0.20.5`, empty cache | 21m01s | 4m41s | 1038 |
+| bump to `0.20.6`, cache warm | 3m10s | 2m16s | **12** |
+| same closure again, nothing to do | 1m48s | 46s | 0 |
+
+Two things follow. The compile was never the expensive part of the first run —
+**14m21s of the 21 went to uploading** 409 MiB to Cachix, which happens once.
+And a version bump rebuilds a dozen derivations, not a thousand, because the
+hundreds of npm and PyPI fetches a hermes closure needs carry over unchanged
+between adjacent releases.
+
+So the weekly cadence is close to free, and it is self-reinforcing: the longer
+the gap between updates, the more of the closure has moved and the closer the
+run gets to the cold-cache case.
 
 ## What is cached, and what it costs
 
@@ -161,18 +295,22 @@ exactly that — CPython, glibc, node, the usual base:
 | --- | --- | --- |
 | closure | 551 | 3.29 GiB |
 | already on `cache.nixos.org`, skipped | 430 | 2.89 GiB |
-| **actually stored** | **121** | **0.40 GiB** uncompressed |
-| the same, at the 3.61x compression measured on this closure | | **~115 MiB** |
+| **actually stored here** | **121** | **409.3 MiB** uncompressed |
+| the same, compressed 3.74x | | **109.6 MiB** |
 
-So one version costs roughly 115 MiB of the free 5 GB tier — call it 40
-versions, most of a year at the weekly update cadence. Ageing them out needs no
-policy either: Cachix evicts least-recently-used entries at the limit, and the
-only version anyone pulls is whichever one the consumer currently pins.
+So the *first* version cost about 110 MiB of the free 5 GB tier — roughly 45 of
+them if every version cost the same. None of the later ones do: the bump to
+`0.20.6` rebuilt 12 derivations, the rest of the closure being npm and PyPI
+fetches that carry over between adjacent releases. The real headroom is
+therefore well past 45 versions, by an amount not worth measuring precisely
+while the answer is "not the constraint".
 
-Measured with `nix path-info -r` over the closure plus a narinfo probe against
-cache.nixos.org, and the compression ratio sampled from the 430 paths that are
-already there. The exact compressed figure appears in this cache's own narinfo
-after the first push.
+Ageing them out needs no policy either: Cachix evicts least-recently-used
+entries at the limit, and the only version anyone pulls is whichever one the
+consumer currently pins.
+
+The table is read from this cache's own narinfo after the first push (`NarSize`
+and `FileSize` over the closure), not estimated.
 
 ## Acknowledgements
 
@@ -182,8 +320,8 @@ which does the same job for Claude Code. No code was taken from it; the two
 flakes and their workflows have little in common, because the underlying builds
 are nothing alike. Claude Code ships an official prebuilt binary, so that flake
 repackages a download. hermes-agent ships source, so this one caches a real
-40-minute compile. Worth reading if you want the pattern applied to something
-that builds quickly.
+compile — 1038 derivations and 409 MiB of cache on the first run. Worth reading
+if you want the pattern applied to something that builds quickly.
 
 ## Licence
 

@@ -5,13 +5,20 @@
 # workflows. Left to `on: push`, build.yaml would never fire, the pin would
 # advance, and the cache would go stale against it without anything failing.
 # A stale cache is invisible: the consumer just quietly builds for an hour.
+#
+# Which release to pin, and whether it is a milestone, are decided by
+# ./update.nu. It lives outside this file so it can be run and read on its own —
+# `./update.nu --dry-run` answers both questions without writing anything, where
+# shell embedded in a workflow can only ever be exercised by pushing it.
 name: update
 
 on:
   schedule:
-    # Weekly. Upstream releases roughly that often, and every bump costs a full
-    # rebuild — hourly checks (what nix-claude-code does) suit a flake that only
-    # repackages a prebuilt binary, not one that compiles for ~40 minutes.
+    # Weekly, which is about the tag cadence upstream keeps: 30 releases in the
+    # five and a half months to 2026-08-27, one every 5.8 days. Matching that
+    # rate keeps each run to the dozen-odd derivations a version bump actually
+    # changes; checking hourly would spend a runner to learn nothing, and
+    # checking monthly would let the diff grow back towards a cold build.
     - cron: "0 3 * * 1"
   workflow_dispatch:
 
@@ -22,32 +29,77 @@ jobs:
       contents: write
     outputs:
       changed: ${{ steps.update.outputs.changed }}
+      milestone: ${{ steps.update.outputs.milestone }}
+      sha: ${{ steps.push.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31.11.1
 
+      # Writes changed / tag / milestone to $GITHUB_OUTPUT.
       - id: update
-        name: Update the hermes-agent pin
-        run: |
-          nix flake update hermes-agent
-          if git diff --quiet -- flake.lock; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+        name: Pin the newest upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./update.nu
 
-      - name: Commit and push
+      # Both files, always together. flake.nix carries the tag and flake.lock
+      # the rev it resolved to; committing one without the other leaves the repo
+      # claiming a release it has not locked.
+      - id: push
+        name: Commit and push
         if: steps.update.outputs.changed == 'true'
         run: |
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'chore: update hermes-agent pin' -- flake.lock
+          git commit -m "chore: pin hermes-agent ${{ steps.update.outputs.tag }}" -- flake.nix flake.lock
           git push
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   # Only after the commit has landed, so the cache is populated for a pin that
   # actually exists on main.
+  #
+  # `ref` is not optional decoration. A reusable workflow runs at the commit
+  # that started the *caller*, and the push above happened after that, so
+  # `github.sha` still names main's previous tip. Left to checkout's default
+  # this job would rebuild the old pin, find it already cached, go green in
+  # under two minutes, and leave the new pin uncached — with `promote` then
+  # advancing `minor` on the strength of it.
   build:
     needs: update
     if: needs.update.outputs.changed == 'true'
     uses: ./.github/workflows/build.yaml
+    with:
+      ref: ${{ needs.update.outputs.sha }}
     secrets: inherit
+
+  # `main` takes every release; `minor` takes only the milestones. A consumer
+  # chooses between them with one word in its flake URL:
+  #
+  #   github:asktt1770/nix-hermes-agent          -> every release
+  #   github:asktt1770/nix-hermes-agent/minor    -> milestones only
+  #
+  # A branch rather than a tag or a marker file because a branch is the only one
+  # of the three a consumer picks once — `nix flake update` then follows it on
+  # its own, with nothing to bump by hand and no tooling to write.
+  #
+  # `minor` only ever points at a commit `main` already passed through, so this
+  # is a fast-forward and needs no force. It costs no build either: the closure
+  # was pushed to Cachix when `main` took the same commit, and the cache is keyed
+  # by store path, not by branch.
+  #
+  # After `build`, not alongside it. `minor` is the conservative channel, so it
+  # should never point a consumer at a pin whose closure failed to compile.
+  # `build` being skipped skips this too, which is the intended reading of
+  # "nothing changed".
+  promote:
+    needs: [update, build]
+    if: needs.update.outputs.milestone == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # The exact commit `update` pushed, not whatever `main` has drifted to.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.update.outputs.sha }}
+      - run: git push origin HEAD:refs/heads/minor
