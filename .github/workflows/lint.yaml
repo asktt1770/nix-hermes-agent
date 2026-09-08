@@ -1,0 +1,36 @@
+# Check the workflow files themselves, because nothing else does.
+#
+# build.yaml is filtered to the files that decide a store path, and update.yaml
+# has no `pull_request` trigger at all — it runs on a schedule and by hand. So a
+# change to update.yaml reaches main without a single job having read it.
+#
+# That matters more here than the usual "CI should lint" argument, because
+# update.yaml fails silently. A workflow GitHub cannot parse produces no run and
+# no failure, and `update` is scheduled weekly, so the first sign of trouble is a
+# cache that quietly stopped moving — which looks exactly like a quiet fortnight
+# upstream.
+#
+# actionlint catches the shapes GitHub does not report. An undefined property in
+# an expression — `github.tokenn` for `github.token` — evaluates to the empty
+# string rather than raising, so the step runs with GH_TOKEN unset. A day-of-week
+# outside 0-6 is dropped from the schedule. A `needs:` naming a job that does not
+# exist is a run-time error nobody sees until the run.
+name: lint
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/**"]
+  pull_request:
+    paths: [".github/workflows/**"]
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31.11.1
+
+      # The same invocation used locally, deliberately. A linter that is only
+      # reachable in CI gets its failures debugged by pushing commits.
+      - run: nix run nixpkgs#actionlint -- -no-color
