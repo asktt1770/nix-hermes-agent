@@ -212,6 +212,12 @@ gain is that the run history stays a record of closure changes.
 `workflow_dispatch` and `workflow_call` ignore `paths`, so the chained build
 after an update always runs.
 
+That filter leaves the workflow files themselves unread — and `update.yaml`,
+having no `pull_request` trigger, is unread by its own workflow too. `lint.yaml`
+covers the gap: it runs `actionlint` over `.github/workflows/**` whenever one of
+those files changes. It is worth having because a workflow GitHub cannot parse
+produces no run and no failure, and a weekly schedule is slow to show it.
+
 ## The hash match is already verified
 
 The whole design rests on one claim: a path built here is byte-identical to the
