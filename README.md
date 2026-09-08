@@ -112,7 +112,9 @@ then it would be 3 GiB of cache nobody pulls.
 
 ## Updates
 
-`update.yaml` runs weekly. It resolves upstream's newest **tagged release**,
+`update.yaml` runs weekly, in two Sunday slots that both sit ahead of Monday
+morning JST — `schedule` is best-effort, so the second is there for the weeks
+GitHub delays or drops the first. It resolves upstream's newest **tagged release**,
 rewrites the ref in `flake.nix`, re-locks, and — in the same run — rebuilds and
 pushes. The rebuild is chained rather than triggered by the commit because
 pushes made with `GITHUB_TOKEN` do not start other workflows; the cache would

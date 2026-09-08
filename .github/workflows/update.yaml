@@ -19,7 +19,22 @@ on:
     # rate keeps each run to the dozen-odd derivations a version bump actually
     # changes; checking hourly would spend a runner to learn nothing, and
     # checking monthly would let the diff grow back towards a cold build.
-    - cron: "0 3 * * 3"
+    #
+    # Both slots are Sunday so the cache is warm before Monday morning JST,
+    # which is 00:00 UTC Monday — the deadline both of them sit in front of.
+    #
+    # Twice rather than once because `schedule` is best-effort. GitHub delays it
+    # under load (the 2026-09-07 run started 4h38m after its slot) and may drop
+    # it altogether, which from the outside is indistinguishable from a quiet
+    # week upstream. Twelve hours apart also means anything upstream publishes
+    # during Sunday is still picked up the same weekend.
+    #
+    # A redundant run costs the `update` job alone, around two minutes:
+    # update.nu re-reads the same release, reports changed=false, and `build`
+    # and `promote` both skip. Minute 23 rather than 0 because the top of the
+    # hour is when the queue is longest.
+    - cron: "23 0 * * 0" # Sun 09:23 JST
+    - cron: "23 12 * * 0" # Sun 21:23 JST
   workflow_dispatch:
 
 jobs:
