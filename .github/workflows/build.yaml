@@ -6,13 +6,39 @@
 # 2 CPU / 8 GB and spend a metered minute budget.
 name: build
 
+# Filtered to the files that decide what gets built and how. A docs-only commit
+# reproduces a store path already in the cache: measured at 1m48s, so this saves
+# little time. What it buys is that the run history stays a record of closure
+# changes rather than of every typo fix.
+#
+# `paths` is absent from the two triggers below it because GitHub ignores the key
+# there — which is what keeps update.yaml's chained call, and a manual re-run,
+# building unconditionally.
 on:
   push:
     branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/build.yaml
   pull_request:
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/build.yaml
   workflow_dispatch:
   # Called by update.yaml right after it moves the pin — see the note there.
   workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Commit to build. update.yaml passes the commit it has just pushed,
+          because a reusable workflow runs at the *caller's* commit: `github.sha`
+          is main's tip from before that push, so checking out the default would
+          rebuild the previous pin and report it green.
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   group: build-${{ github.ref }}
@@ -22,7 +48,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Empty for every trigger except update.yaml's call, where checkout falls
+      # back to its own default of the event's ref.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       # hermes' closure is ~3.3 GiB, and getting there unpacks several hundred
       # npm and PyPI sources, against a runner image that leaves roughly 14 GB

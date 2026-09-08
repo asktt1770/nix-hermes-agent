@@ -12,7 +12,13 @@
     #
     # That is why there is no `nixpkgs` input, and why the line below carries no
     # `inputs.nixpkgs.follows`. See "Two rules" in the README.
-    hermes-agent.url = "github:NousResearch/hermes-agent";
+    #
+    # The trailing ref pins a tagged release rather than the default branch.
+    # `main` moves far faster than the tags do, so an unpinned URL caches
+    # whatever mid-development commit the weekly job happens to land on — a
+    # commit upstream never declared shippable. `update.yaml` rewrites this line
+    # to the newest tag; flake.lock records the rev that tag resolves to.
+    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.8.27";
   };
 
   # Applies only when THIS flake is the top level, e.g.
