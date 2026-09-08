@@ -138,8 +138,8 @@ cannot perturb what gets cached.
 The input carries an explicit ref (`…/hermes-agent/v2026.8.27`) rather than
 tracking the default branch. Upstream merges to `main` far faster than it tags —
 thousands of commits a month against a release every six days or so — so an
-unpinned URL caches whichever mid-development commit the Monday 03:00 job lands
-on. Nothing is wrong with those commits except that upstream never declared them
+unpinned URL caches whichever mid-development commit the weekly job lands on.
+Nothing is wrong with those commits except that upstream never declared them
 shippable, and there is no reason for the cache to be the thing that finds out.
 
 Tracking tags does *not* meaningfully reduce the update rate. Upstream tagged 30

@@ -19,7 +19,7 @@ on:
     # rate keeps each run to the dozen-odd derivations a version bump actually
     # changes; checking hourly would spend a runner to learn nothing, and
     # checking monthly would let the diff grow back towards a cold build.
-    - cron: "0 3 * * 1"
+    - cron: "0 3 * * 3"
   workflow_dispatch:
 
 jobs:
