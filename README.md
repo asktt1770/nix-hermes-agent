@@ -308,11 +308,13 @@ Not yet done — the cache does not exist until these are:
       write** token from the cache's own Settings, not a personal token, which
       would carry account-wide access into CI
 - [x] Run `build` once and confirm paths land in the cache
-- [x] Seed the channel branches. Nothing to do by hand: `promote` creates a
-      branch the first time it advances one. `minor` appeared on 2026-09-09 with
-      `0.21.1`; `patch` appears on the next release of any kind; `major` waits
-      for 1.0.0. Until a channel has been created, a consumer pointing at it
-      fails to resolve, which is the intended signal rather than a gap
+- [x] Seed the channel branches. `promote` creates one the first time it
+      advances it, so `minor` appeared on its own with `0.21.1` on 2026-09-09.
+      `patch` was pushed from `main` by hand at `0.21.1` rather than waiting:
+      it is the channel this README leads with, and leaving it to the next
+      release would have left that URL unresolvable for up to a week. `major`
+      is *not* seeded — see "The channels" for why an absent branch is the
+      wanted behaviour there and a missing one is not
 - [ ] Switch the consumer's input and add the substituter
 
 The first run was also the experiment, since no public runner had built this
