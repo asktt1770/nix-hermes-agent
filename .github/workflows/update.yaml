@@ -14,12 +14,30 @@ name: update
 
 on:
   schedule:
-    # Weekly, which is about the tag cadence upstream keeps: 30 releases in the
-    # five and a half months to 2026-08-27, one every 5.8 days. Matching that
-    # rate keeps each run to the dozen-odd derivations a version bump actually
-    # changes; checking hourly would spend a runner to learn nothing, and
-    # checking monthly would let the diff grow back towards a cold build.
-    - cron: "0 3 * * 3"
+    # Daily, and the frequency is what keeps the channels honest rather than
+    # what keeps them fresh.
+    #
+    # `update.nu` pins whatever `releases/latest` reports, so any release that
+    # is superseded before the next run is never pinned and never built. When
+    # the one skipped is an `X.Y.0`, the `minor` channel loses that milestone
+    # entirely and waits for the next one. Measured against all 32 upstream
+    # releases, the expected number of `X.Y.0` releases missed out of 20 is 4.0
+    # at weekly, 1.5 at twice weekly and 0.7 daily. It does not reach zero —
+    # `0.15.1` followed `0.15.0` by 7h24m — but a fifth of milestones lost is a
+    # different thing from a thirtieth.
+    #
+    # Daily costs nothing extra to build: the number of builds is set by how
+    # often upstream releases, not by how often this looks. A run with nothing
+    # to do is the `update` job alone, measured at 47s, on a public repo with
+    # unlimited free minutes.
+    #
+    # 12:23 UTC is 21:23 JST, chosen backwards from wanting the cache warm by
+    # 07:00 JST — 22:00 UTC. Scheduled runs are best-effort and start late under
+    # load: the two observed here ran 4h38m and 4h53m behind. Half an hour of
+    # run time and this slot still lands before the deadline with a delay of up
+    # to nine hours. Minute 23 rather than 0 because the top of the hour is when
+    # the queue is longest.
+    - cron: "23 12 * * *"
   workflow_dispatch:
 
 jobs:
@@ -29,13 +47,13 @@ jobs:
       contents: write
     outputs:
       changed: ${{ steps.update.outputs.changed }}
-      milestone: ${{ steps.update.outputs.milestone }}
+      channels: ${{ steps.update.outputs.channels }}
       sha: ${{ steps.push.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31.11.1
 
-      # Writes changed / tag / milestone to $GITHUB_OUTPUT.
+      # Writes changed / tag / level / channels to $GITHUB_OUTPUT.
       - id: update
         name: Pin the newest upstream release
         env:
@@ -72,34 +90,48 @@ jobs:
       ref: ${{ needs.update.outputs.sha }}
     secrets: inherit
 
-  # `main` takes every release; `minor` takes only the milestones. A consumer
-  # chooses between them with one word in its flake URL:
+  # The release channels. A consumer picks one with a word in its flake URL:
   #
-  #   github:asktt1770/nix-hermes-agent          -> every release
-  #   github:asktt1770/nix-hermes-agent/minor    -> milestones only
+  #   github:asktt1770/nix-hermes-agent          -> main, same commits as patch
+  #   github:asktt1770/nix-hermes-agent/patch    -> every release
+  #   github:asktt1770/nix-hermes-agent/minor    -> every X.Y.0
+  #   github:asktt1770/nix-hermes-agent/major    -> every X.0.0
   #
-  # A branch rather than a tag or a marker file because a branch is the only one
+  # Branches rather than tags or marker files because a branch is the only one
   # of the three a consumer picks once — `nix flake update` then follows it on
   # its own, with nothing to bump by hand and no tooling to write.
   #
-  # `minor` only ever points at a commit `main` already passed through, so this
-  # is a fast-forward and needs no force. It costs no build either: the closure
-  # was pushed to Cachix when `main` took the same commit, and the cache is keyed
-  # by store path, not by branch.
+  # Which of them a given release advances is decided by update.nu, which
+  # reports it as a JSON array so the cascade lives next to the version parsing
+  # it depends on rather than in `if:` expressions here. A minor bump advances
+  # patch and minor, a major bump advances all three.
   #
-  # After `build`, not alongside it. `minor` is the conservative channel, so it
-  # should never point a consumer at a pin whose closure failed to compile.
-  # `build` being skipped skips this too, which is the intended reading of
-  # "nothing changed".
+  # `major` does not exist yet, and this job is what will create it: `git push`
+  # to a ref that has no branch makes one. Upstream has never left `0.x`, so
+  # creating it now would leave it frozen for however long that lasts, and a
+  # consumer following a frozen channel sees no updates and no errors. An
+  # unresolvable branch fails on the spot instead.
+  #
+  # Every channel only ever points at a commit `main` already passed through, so
+  # these are fast-forwards and need no force. They cost no build either: the
+  # closure went to Cachix when `main` took the same commit, and the cache is
+  # keyed by store path, not by branch.
+  #
+  # After `build`, not alongside it. A channel should never point a consumer at
+  # a pin whose closure failed to compile. `build` being skipped skips this too,
+  # which is the intended reading of "nothing changed".
   promote:
     needs: [update, build]
-    if: needs.update.outputs.milestone == 'true'
+    if: needs.update.outputs.changed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      matrix:
+        channel: ${{ fromJSON(needs.update.outputs.channels) }}
     steps:
       # The exact commit `update` pushed, not whatever `main` has drifted to.
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.update.outputs.sha }}
-      - run: git push origin HEAD:refs/heads/minor
+      - run: git push origin HEAD:refs/heads/${{ matrix.channel }}

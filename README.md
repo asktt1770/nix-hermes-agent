@@ -35,21 +35,41 @@ identity files.
 
 ### 1. Point your flake at this repo instead of upstream
 
-Pick a branch. The two differ only in how often they move:
+Pick a channel. They are branches of this repo, named for the SemVer component
+upstream has to bump before they move:
 
 ```nix
-# Every upstream release — one every ~6 days
-inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent";
+# Every release — one every ~6 days
+inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent/patch";
 
-# Milestones only — one every ~13 days lately, and lengthening
+# Every X.Y.0 — one every ~13 days lately, and lengthening
 inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent/minor";
+
+# Every X.0.0 — does not exist yet; see below
+inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent/major";
 ```
 
-Both are built and pushed to the same cache, so neither is faster to install;
-`minor` trades freshness for fewer rebuild-and-switch cycles on the consuming
-host. The choice is made once — `nix flake update` follows whichever branch the
-URL names from then on, with nothing to bump by hand. Switching later is the
-same one-word edit.
+`main` is the default branch and carries the same commits as `patch`, so the
+URL with no branch at all is the same subscription written shorter:
+
+```nix
+inputs.hermes-agent.url = "github:asktt1770/nix-hermes-agent";
+```
+
+**`major` does not exist yet.** Upstream has never left `0.x`, so there has
+never been a major bump to create it; CI makes the branch the first time one
+happens. Until then that URL fails to resolve, which is deliberate — a branch
+created early would sit frozen for however long `0.x` lasts, and a consumer
+following it would see no updates and no errors, which reads exactly like a
+quiet upstream. `nix` reporting `unable to download … /commits/major` on the
+spot is the better of the two.
+
+Every channel is built and pushed to the same cache, so none is faster to
+install; the conservative ones trade freshness for fewer rebuild-and-switch
+cycles on the consuming host. The choice is made once — `nix flake update`
+follows whichever branch the URL names from then on, with nothing to bump by
+hand. Switching later is the same one-word edit, and lands on paths the cache
+already holds.
 
 The outputs are re-exported verbatim (`packages`, `nixosModules`,
 `homeManagerModules`, `overlays`), so this is a drop-in swap — nothing else in a
@@ -112,7 +132,7 @@ then it would be 3 GiB of cache nobody pulls.
 
 ## Updates
 
-`update.yaml` runs weekly. It resolves upstream's newest **tagged release**,
+`update.yaml` runs daily. It resolves upstream's newest **tagged release**,
 rewrites the ref in `flake.nix`, re-locks, and — in the same run — rebuilds and
 pushes. The rebuild is chained rather than triggered by the commit because
 pushes made with `GITHUB_TOKEN` do not start other workflows; the cache would
@@ -123,9 +143,10 @@ workflow, so it can be read and run on its own:
 
 ```console
 $ ./update.nu --dry-run
-pinned:    v2026.8.27 (0.20.6)
-latest:    v2026.8.31 (0.21.0)
-milestone: true
+pinned:   v2026.8.27 (0.20.6)
+latest:   v2026.8.31 (0.21.0)
+bump:     minor
+advances: patch, minor
 ```
 
 The shebang pulls nushell from the flake registry rather than with
@@ -138,41 +159,50 @@ cannot perturb what gets cached.
 The input carries an explicit ref (`…/hermes-agent/v2026.8.27`) rather than
 tracking the default branch. Upstream merges to `main` far faster than it tags —
 thousands of commits a month against a release every six days or so — so an
-unpinned URL caches whichever mid-development commit the weekly job lands on.
+unpinned URL caches whichever mid-development commit the daily job lands on.
 Nothing is wrong with those commits except that upstream never declared them
 shippable, and there is no reason for the cache to be the thing that finds out.
 
-Tracking tags does *not* meaningfully reduce the update rate. Upstream tagged 30
-releases in the five and a half months to 2026-08-27 — one every 5.7 days — so
-the weekly job usually still has something to take.
+Tracking tags does *not* meaningfully reduce the update rate. Upstream tagged 32
+releases in the six months to 2026-09-07 — one every 5.8 days — so `patch` moves
+about as often as an unpinned URL would.
 
-Nor is there a "wait for a major version" option, which is the obvious next
-question. Upstream has two version numbers and neither offers one: the git tags
-are CalVer (`v2026.8.27`, so the major is the year), and `pyproject.toml` is
-still on `0.x` (`0.20.6`), where SemVer puts breaking changes in the minor. The
-minor is therefore the nearest thing to a milestone, and it is what the `minor`
-branch follows.
+Note that "wait for a major version" is not a way to wait a long time here. The
+git tags are CalVer (`v2026.8.27`, so the major is the year), and
+`pyproject.toml` is on `0.x` (`0.21.1`), where the major has never moved at all.
+The `major` channel is real, but it is empty until upstream ships 1.0.0.
 
-### The two branches
+### The channels
 
-`main` takes every release. `minor` takes only the ones where upstream's minor
-version moved. Nothing else separates them: `minor` always points at a commit
-`main` already passed through, so promoting it is a fast-forward, and it costs
-no build — the closure went to Cachix when `main` took the same commit, and the
-cache is keyed by store path rather than by branch.
+The three channels are the three SemVer components, and they mean what upstream
+means by them — `scripts/release.py` takes `--bump {major,minor,patch}` and
+increments exactly the way the spec says.
 
-Detecting a milestone needs the semver, and the CalVer tag has none — `v2026.8.31`
-is a date. The semver is in the release *title*, which upstream's
+| upstream bumps | `patch` | `minor` | `major` |
+| --- | --- | --- | --- |
+| patch | moves | — | — |
+| minor | moves | moves | — |
+| major | moves | moves | moves |
+
+The cascade is not decoration. A `1.0.0` is the `X.Y.0` opening a new major, so
+a consumer following `minor` should get it; SemVer nests and so do the channels.
+
+Nothing else separates them. Every channel points at a commit `main` already
+passed through, so promoting one is a fast-forward, and it costs no build — the
+closure went to Cachix when `main` took the same commit, and the cache is keyed
+by store path rather than by branch. Measured at **4 seconds**.
+
+Deciding which channels move needs the semver, and the CalVer tag has none —
+`v2026.8.31` is a date. The semver is in the release *title*, which upstream's
 `scripts/release.py` writes from a format string:
 
 ```python
 "--title", f"Hermes Agent v{new_version} ({calver_date})",
 ```
 
-So `update.nu` reads `.name` off the release, takes the version with its patch
-component dropped (`0.21.0` → `0.21`), and compares old against new. Unchanged
-is a patch; changed is a milestone. A future `1.0.0` reads as `1.0` and
-promotes, which is what you would want. All 31 releases to `v2026.8.31` parse.
+So `update.nu` reads `.name` off the release, compares each component against
+the previously pinned version, and reports the highest one that moved. All 32
+releases to `v2026.9.7` parse.
 
 The *nickname* some titles carry is not the signal and cannot be: `0.15.1`
 shipped as "The Patch Release" while `0.20.0`, `0.17.0` and `0.14.0` — all
@@ -183,21 +213,46 @@ changed format upstream and a quiet month upstream are indistinguishable from
 the outside, and only one of them should freeze the conservative channel.
 
 `promote` waits for `build` to go green. `main` does not, by design: it is the
-channel that finds out. `minor` should never point a consumer at a pin whose
+channel that finds out. No channel should ever point a consumer at a pin whose
 closure failed to compile.
 
-Cadence, measured over all 30 upstream releases from `0.2.0` to `0.20.6`
-(2026-03-12 to 2026-08-27):
+Cadence, measured over all 32 upstream releases from `0.2.0` to `0.21.1`
+(2026-03-12 to 2026-09-07):
 
 | | interval |
 | --- | --- |
-| every release (`main`) | 5.8 days |
-| milestones, whole span | 8.0 days |
-| milestones, last six | **13.4 days** |
+| `patch` | 5.8 days |
+| `minor`, whole span | 8.5 days |
+| `minor`, last six | **13.4 days** |
+| `major` | never yet |
 
-The gap has widened steadily: 5 days between the March milestones, then 14, then
-`0.21.0` landing 28 days after `0.20.0` on 2026-08-31. The `minor` branch is
-worth more now than its lifetime average suggests.
+The `minor` gap has widened steadily: 5 days between the March milestones, then
+14, then `0.21.0` landing 28 days after `0.20.0`. The conservative channels are
+worth more now than their lifetime averages suggest.
+
+### Why daily
+
+`update.nu` pins whatever `releases/latest` reports, so a release superseded
+before the next run is never pinned and never built. When the skipped one is an
+`X.Y.0`, `minor` loses that milestone and waits for the next.
+
+Measured against all 32 releases, the expected number of the 20 `X.Y.0`
+releases missed:
+
+| poll interval | milestones missed |
+| --- | --- |
+| weekly | 4.0 of 20 |
+| twice weekly | 1.5 of 20 |
+| **daily** | **0.7 of 20** |
+
+Daily does not reach zero — `0.15.1` followed `0.15.0` by 7h24m — but a fifth
+of milestones lost is a different thing from a thirtieth, and closing the last
+3% would mean polling hourly or teaching `update.nu` to walk the releases it
+skipped. Neither is worth it.
+
+It costs no extra builds: how many builds happen is set by how often upstream
+releases, not by how often this looks. A run with nothing to do is the `update`
+job alone, 47s, on a public repo with unlimited free minutes.
 
 ### Order of operations
 
@@ -216,7 +271,7 @@ That filter leaves the workflow files themselves unread — and `update.yaml`,
 having no `pull_request` trigger, is unread by its own workflow too. `lint.yaml`
 covers the gap: it runs `actionlint` over `.github/workflows/**` whenever one of
 those files changes. It is worth having because a workflow GitHub cannot parse
-produces no run and no failure, and a weekly schedule is slow to show it.
+produces no run and no failure, and nothing else would report it.
 
 ## The hash match is already verified
 
@@ -239,7 +294,7 @@ above are protecting. That pin is still `0954f7ee2f6b` at `v2026.8.27`, so the
 move to `0.20.6` changed the hermes rev and nothing underneath it.
 
 Worth repeating after any *structural* change to `flake.nix` — a new input, a
-`follows`, anything reshaping `outputs`. Not after the weekly ref bump, which
+`follows`, anything reshaping `outputs`. Not after the daily ref bump, which
 `update.yaml` makes to that file by design and which is supposed to change the
 hash. It costs an eval rather than a build.
 
@@ -253,10 +308,13 @@ Not yet done — the cache does not exist until these are:
       write** token from the cache's own Settings, not a personal token, which
       would carry account-wide access into CI
 - [x] Run `build` once and confirm paths land in the cache
-- [ ] Create the `minor` branch once, from `main` — `git push origin main:minor`.
-      `update.yaml` only ever fast-forwards it, so until upstream's next
-      milestone it has nothing to create, and a consumer pointing at `/minor`
-      would fail to resolve
+- [x] Seed the channel branches. `promote` creates one the first time it
+      advances it, so `minor` appeared on its own with `0.21.1` on 2026-09-09.
+      `patch` was pushed from `main` by hand at `0.21.1` rather than waiting:
+      it is the channel this README leads with, and leaving it to the next
+      release would have left that URL unresolvable for up to a week. `major`
+      is *not* seeded — see "The channels" for why an absent branch is the
+      wanted behaviour there and a missing one is not
 - [ ] Switch the consumer's input and add the substituter
 
 The first run was also the experiment, since no public runner had built this
@@ -283,7 +341,7 @@ And a version bump rebuilds a dozen derivations, not a thousand, because the
 hundreds of npm and PyPI fetches a hermes closure needs carry over unchanged
 between adjacent releases.
 
-So the weekly cadence is close to free, and it is self-reinforcing: the longer
+So the daily cadence is close to free, and it is self-reinforcing: the longer
 the gap between updates, the more of the closure has moved and the closer the
 run gets to the cold-cache case.
 
