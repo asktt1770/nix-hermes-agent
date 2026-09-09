@@ -1,8 +1,8 @@
 #!/usr/bin/env nix
 #! nix shell nixpkgs#nushell -c nu
 
-# Pin this flake to upstream's newest tagged release, and say whether that
-# release is a milestone.
+# Pin this flake to upstream's newest tagged release, and say which release
+# channels that pin advances.
 #
 # Run it by hand before trusting a change to it:
 #
@@ -10,7 +10,7 @@
 #     ./update.nu              # rewrite flake.nix, re-lock, print the outcome
 #
 # Under Actions the outcome goes to $GITHUB_OUTPUT instead of stdout, and
-# update.yaml reads `changed`, `tag` and `milestone` from there.
+# update.yaml reads `changed`, `tag`, `level` and `channels` from there.
 #
 # The shebang above resolves nushell from the flake registry rather than with
 # `nix shell --inputs-from .`, which is what nix-claude-code does. It cannot
@@ -63,27 +63,56 @@ def version-of [
     $found.0.version
 }
 
-# The part of a semver that identifies a milestone: everything but the patch.
+# Which SemVer component moved between two versions: "major", "minor" or "patch".
 #
-# Upstream is on `0.x`, where SemVer puts breaking changes in the minor, so
-# `0.20.6` and `0.20.5` share an identity while `0.21.0` starts a new one. A
-# future `1.0.0` reads as `1.0` and starts one too, which is what you would want.
-def milestone-id [
-    version: string # a semver, e.g. "0.21.0"
-]: nothing -> string {
-    $version | split row "." | first 2 | str join "."
-}
-
-# Whether moving from one version to another crosses a milestone.
+# The same three words upstream itself bumps with — `scripts/release.py` takes
+# `--bump {major,minor,patch}` and increments exactly this way — so a release
+# upstream calls a minor is one this repo calls a minor too.
 #
-# A null `old` means nothing was pinned before, so there is no crossing to
-# detect. Treated as "cannot tell" rather than guessed either way.
-def is-milestone [
+# A null `old` means nothing was pinned before. Reported as "patch", the level
+# that claims least: there is no earlier version to have moved away from, and
+# guessing higher would seed the conservative channels off a release nobody
+# established was a milestone.
+def bump-level [
     old: any # the previous semver, or null
     new: string # the semver being pinned
-]: nothing -> bool {
-    if $old == null { return false }
-    (milestone-id $old) != (milestone-id $new)
+]: nothing -> string {
+    if $old == null { return "patch" }
+
+    let a = ($old | split row "." | each {|p| $p | into int})
+    let b = ($new | split row "." | each {|p| $p | into int})
+
+    if ($a | get 0? | default 0) != ($b | get 0? | default 0) {
+        "major"
+    } else if ($a | get 1? | default 0) != ($b | get 1? | default 0) {
+        "minor"
+    } else {
+        "patch"
+    }
+}
+
+# The channels a bump of this level advances.
+#
+# SemVer nests, so the cascade does too: every release is a patch-level change
+# to someone, a minor bump is also a patch bump of the line it opens, and a
+# major bump is both. A consumer following `minor` wants each `X.Y.0` including
+# the `X.0.0` that opens a new major, which is why "major" lists all three
+# rather than only itself.
+#
+# `major` is absent from this repo until upstream ships 1.0.0, and that is
+# deliberate: `promote` creates a channel the first time it advances, so the
+# branch appears on its own. A branch created early would instead sit frozen for
+# however long `0.x` lasts, and a consumer following it would see no updates and
+# no errors — indistinguishable from a quiet upstream. An unresolvable branch
+# fails immediately, which is the better of the two.
+def channels-for [
+    level: string # "major", "minor" or "patch"
+]: nothing -> list<string> {
+    match $level {
+        "major" => ["patch" "minor" "major"]
+        "minor" => ["patch" "minor"]
+        _ => ["patch"]
+    }
 }
 
 # Point flake.nix's hermes-agent input at `tag`.
@@ -154,9 +183,11 @@ def main [
     if $dry_run {
         let old_version = (if ($old_tag | is-empty) { null } else { version-of $old_tag })
         let new_version = (version-of $tag)
-        print $"pinned:    ($old_tag | default '<none>') \(($old_version | default '<none>')\)"
-        print $"latest:    ($tag) \(($new_version)\)"
-        print $"milestone: (is-milestone $old_version $new_version)"
+        let level = (bump-level $old_version $new_version)
+        print $"pinned:   ($old_tag | default '<none>') \(($old_version | default '<none>')\)"
+        print $"latest:   ($tag) \(($new_version)\)"
+        print $"bump:     ($level)"
+        print $"advances: (channels-for $level | str join ', ')"
         return
     }
 
@@ -172,8 +203,12 @@ def main [
 
     let old_version = (if ($old_tag | is-empty) { null } else { version-of $old_tag })
     let new_version = (version-of $tag)
-    let milestone = (is-milestone $old_version $new_version)
+    let level = (bump-level $old_version $new_version)
+    let channels = (channels-for $level)
 
-    emit {changed: true, tag: $tag, milestone: $milestone}
-    print $"($old_version | default '<none>') -> ($new_version) \(milestone=($milestone)\)"
+    # `channels` is consumed by update.yaml as a matrix, via fromJSON. Compact
+    # rather than pretty, because a newline in a value would close the
+    # $GITHUB_OUTPUT entry early and leave the rest read as further outputs.
+    emit {changed: true, tag: $tag, level: $level, channels: ($channels | to json --raw)}
+    print $"($old_version | default '<none>') -> ($new_version) \(($level)\) advances ($channels | str join ', ')"
 }

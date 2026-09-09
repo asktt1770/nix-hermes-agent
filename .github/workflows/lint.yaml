@@ -6,9 +6,9 @@
 #
 # That matters more here than the usual "CI should lint" argument, because
 # update.yaml fails silently. A workflow GitHub cannot parse produces no run and
-# no failure, and `update` is scheduled weekly, so the first sign of trouble is a
-# cache that quietly stopped moving — which looks exactly like a quiet fortnight
-# upstream.
+# no failure, so the first sign of trouble is a cache that quietly stopped
+# moving — which looks exactly like a quiet week upstream. Running daily shortens
+# the wait for that signal without making it any easier to read.
 #
 # actionlint catches the shapes GitHub does not report. An undefined property in
 # an expression — `github.tokenn` for `github.token` — evaluates to the empty
