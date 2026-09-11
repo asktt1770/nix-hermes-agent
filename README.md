@@ -125,10 +125,33 @@ needs writing down. This applies to the consumer's flake as much as to this one.
 
 ### Cache the variant that is actually consumed
 
-`packages.messaging` and `packages.default` (= `full`) are different derivations.
-CI builds `messaging`, because that is what the consumer asks for. If a consumer
-switches to `default`, `tui`, `web` or `minimal`, add it to `build.yaml` — until
-then it would be 3 GiB of cache nobody pulls.
+`packages.messaging` and `packages.default` (= `full`) are siblings, not nested:
+both are `minimal.override { extraDependencyGroups = …; }`, differing only in
+which groups. So neither contains the other's store path, and a cache holding
+one scores nothing for a consumer asking for the other — even though `full`'s
+groups are a strict superset and it therefore does everything `messaging` does.
+
+Everything under them *is* shared. The two build closures have 5412 derivations
+in common. `default` adds 198 on top — 98 wheels, their 98 unpacked forms, a
+venv and a wrapper — and `messaging` keeps two of its own, its venv and its
+wrapper. Even hermes' own 67 MiB build lands on the same path in both, because
+the dependency set is injected by the wrapper rather than baked into the
+compile. CI builds both, and the second one costs those 198 rather than a
+second closure.
+
+Which also means a cache holding `default` is two cheap derivations away from
+serving `messaging`, and vice versa. "Scores nothing" is the literal answer for
+one store path, not the practical cost of guessing wrong.
+
+`default` earns its 198 by being what upstream's NixOS and Home Manager modules
+resolve to when `services.hermes-agent.package` is left alone. A consumer who
+drops the explicit `.messaging` lands on a path no cache has, and finds out by
+waiting an hour.
+
+`tui` and `web` need no entry in `build.yaml`: they are npm builds that do not
+depend on the Python dependency set, so `messaging` already produces their exact
+paths and the cache already serves them. `minimal`, `desktop` and `sandbox` are
+not cached. Add one when something actually pulls it.
 
 ## Updates
 
@@ -347,9 +370,9 @@ run gets to the cold-cache case.
 
 ## What is cached, and what it costs
 
-`packages.x86_64-linux.messaging` only — the one target a consumer asks for.
-Other systems and variants stay exported but unbuilt because nothing pulls them,
-not because of the quota.
+`packages.x86_64-linux.messaging` and `packages.x86_64-linux.default`. Other
+systems stay exported but unbuilt because nothing pulls them, not because of the
+quota.
 
 Two different sizes get called "the cache", and the gap between them is about
 sixfold. The first is what a consumer downloads — the runtime closure of
@@ -382,13 +405,23 @@ itself at 25.9 MiB stored. The path count collapses between versions because
 the npm and PyPI fetches carry over unchanged; the byte count does not collapse
 with it.
 
-That still leaves over 3.8 GiB, well past fifty more versions. Ageing them out
-needs no policy: Cachix evicts least-recently-used entries at the limit, and the
-only version anyone pulls is whichever one the consumer currently pins.
+Adding `default` is a one-off **≈ 326 MiB** on top. It brings 98 packages
+`messaging` does not have — 155.4 MiB of wheels, of which `voice`
+(faster-whisper and its ctranslate2 / onnxruntime / av / numpy stack) is about
+three quarters — and both the wheel and its unpacked form get stored, which this
+cache's own narinfo puts at 2.07x the wheel for binary packages and 2.21x for
+pure-Python ones. Expect a bump to cost 60–100 MiB once the dependency surface
+is twice as wide.
 
-Both tables are read from this cache's own narinfo (`NarSize` and `FileSize`),
-not estimated — the per-push rows by summing the paths each run logged as
-pushed, deduplicated against the earlier runs in the order listed.
+That still leaves over 3.5 GiB, or 40-odd more versions. Ageing them out needs
+no policy: Cachix evicts least-recently-used entries at the limit, and the only
+version anyone pulls is whichever one the consumer currently pins.
+
+The measured figures are read from this cache's own narinfo (`NarSize` and
+`FileSize`) — the per-push rows by summing the paths each run logged as pushed,
+deduplicated against the earlier runs in the order listed. The two
+forward-looking numbers, the 326 MiB and the 60–100 MiB, are not measured:
+nothing has built `default` yet. Replace them after the first run that does.
 
 ## Acknowledgements
 
