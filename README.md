@@ -369,6 +369,11 @@ The last row is the run that added `default`. Its 193 derivations and 319.4 MiB
 of upload took 1m26s against the 14m21s the first run's 1053 paths took, so the
 cost of that first push was per-path overhead rather than bandwidth.
 
+Once cached, `default` costs 11s and 169 MiB of extra download on a run with
+nothing to build — it substitutes 101 paths the `messaging` step did not need.
+Run totals swing by minutes either way on the `free-disk-space` step, which is
+where a no-op run actually spends its time.
+
 So the daily cadence is close to free, and it is self-reinforcing: the longer
 the gap between updates, the more of the closure has moved and the closer the
 run gets to the cold-cache case.
