@@ -349,7 +349,7 @@ free-disk-space step.
 
 ### Where the time actually goes
 
-That 21 minutes is a cold-cache number and does not describe an update. Three
+That 21 minutes is a cold-cache number and does not describe an update. Four
 runs, measured:
 
 | run | total | `nix build` | derivations built |
@@ -357,12 +357,17 @@ runs, measured:
 | first ever, `0.20.5`, empty cache | 21m01s | 4m41s | 1038 |
 | bump to `0.20.6`, cache warm | 3m10s | 2m16s | **12** |
 | same closure again, nothing to do | 1m48s | 46s | 0 |
+| adding `default`, `messaging` warm | 3m22s | 53s + 1m26s | 193 |
 
 Two things follow. The compile was never the expensive part of the first run —
 **14m21s of the 21 went to uploading** 682 MiB to Cachix, which happens once.
 And a version bump rebuilds a dozen derivations, not a thousand, because the
 hundreds of npm and PyPI fetches a hermes closure needs carry over unchanged
 between adjacent releases.
+
+The last row is the run that added `default`. Its 193 derivations and 319.4 MiB
+of upload took 1m26s against the 14m21s the first run's 1053 paths took, so the
+cost of that first push was per-path overhead rather than bandwidth.
 
 So the daily cadence is close to free, and it is self-reinforcing: the longer
 the gap between updates, the more of the closure has moved and the closer the
@@ -397,7 +402,8 @@ in there too, not only what the output references:
 | `0.20.6` | 18 | 39.2 MiB |
 | `0.21.0`, from a branch dispatch | 11 | 38.4 MiB |
 | `0.21.1` | 21 | 64.6 MiB |
-| **total** | | **≈ 824 MiB** of 5 GB |
+| first `default`, `0.21.1` | 193 | **319.4 MiB** |
+| **total** | | **≈ 1.1 GiB** of 5 GB |
 
 So a version bump costs 40–65 MiB rather than the near-nothing the derivation
 count suggests: it rebuilds a dozen derivations, but one of them is hermes
@@ -405,23 +411,22 @@ itself at 25.9 MiB stored. The path count collapses between versions because
 the npm and PyPI fetches carry over unchanged; the byte count does not collapse
 with it.
 
-Adding `default` is a one-off **≈ 326 MiB** on top. It brings 98 packages
-`messaging` does not have — 155.4 MiB of wheels, of which `voice`
-(faster-whisper and its ctranslate2 / onnxruntime / av / numpy stack) is about
-three quarters — and both the wheel and its unpacked form get stored, which this
-cache's own narinfo puts at 2.07x the wheel for binary packages and 2.21x for
-pure-Python ones. Expect a bump to cost 60–100 MiB once the dependency surface
-is twice as wide.
+`default` cost a one-off 319.4 MiB across 193 paths. It brings 98 packages
+`messaging` does not have, of which `voice` — faster-whisper and its
+ctranslate2 / onnxruntime / av / numpy stack — is about three quarters of the
+weight, and both the wheel and its unpacked form get stored. For a consumer who
+actually switches to it, the closure to download goes from 3.29 GiB to 3.91 GiB.
 
-That still leaves over 3.5 GiB, or 40-odd more versions. Ageing them out needs
-no policy: Cachix evicts least-recently-used entries at the limit, and the only
-version anyone pulls is whichever one the consumer currently pins.
+That still leaves over 3.5 GiB, or 40-odd more versions. Expect each to cost
+more than the 40–65 MiB above, since the dependency surface is now nearly twice
+as wide and more of it moves per release; how much more is not yet measured.
+Ageing them out needs no policy: Cachix evicts least-recently-used entries at
+the limit, and the only version anyone pulls is whichever one the consumer
+currently pins.
 
-The measured figures are read from this cache's own narinfo (`NarSize` and
-`FileSize`) — the per-push rows by summing the paths each run logged as pushed,
-deduplicated against the earlier runs in the order listed. The two
-forward-looking numbers, the 326 MiB and the 60–100 MiB, are not measured:
-nothing has built `default` yet. Replace them after the first run that does.
+Every figure here is read from this cache's own narinfo (`NarSize` and
+`FileSize`), not estimated — the per-push rows by summing the paths each run
+logged as pushed, deduplicated against the earlier runs in the order listed.
 
 ## Acknowledgements
 
