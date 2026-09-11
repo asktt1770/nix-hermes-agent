@@ -336,7 +336,7 @@ runs, measured:
 | same closure again, nothing to do | 1m48s | 46s | 0 |
 
 Two things follow. The compile was never the expensive part of the first run —
-**14m21s of the 21 went to uploading** 409 MiB to Cachix, which happens once.
+**14m21s of the 21 went to uploading** 682 MiB to Cachix, which happens once.
 And a version bump rebuilds a dozen derivations, not a thousand, because the
 hundreds of npm and PyPI fetches a hermes closure needs carry over unchanged
 between adjacent releases.
@@ -351,30 +351,44 @@ run gets to the cold-cache case.
 Other systems and variants stay exported but unbuilt because nothing pulls them,
 not because of the quota.
 
-The quota is nowhere near the constraint it looks like. Cachix does not store
-anything already served by `cache.nixos.org`, and most of a hermes closure is
-exactly that — CPython, glibc, node, the usual base:
+Two different sizes get called "the cache", and the gap between them is about
+sixfold. The first is what a consumer downloads — the runtime closure of
+`messaging`, most of which Cachix never stores because `cache.nixos.org` already
+serves it:
 
 | | paths | size |
 | --- | --- | --- |
 | closure | 551 | 3.29 GiB |
 | already on `cache.nixos.org`, skipped | 430 | 2.89 GiB |
-| **actually stored here** | **121** | **409.3 MiB** uncompressed |
+| **stored here** | **121** | **409.3 MiB** uncompressed |
 | the same, compressed 3.74x | | **109.6 MiB** |
 
-So the *first* version cost about 110 MiB of the free 5 GB tier — roughly 45 of
-them if every version cost the same. None of the later ones do: the bump to
-`0.20.6` rebuilt 12 derivations, the rest of the closure being npm and PyPI
-fetches that carry over between adjacent releases. The real headroom is
-therefore well past 45 versions, by an amount not worth measuring precisely
-while the answer is "not the constraint".
+The second is what the cache actually holds, which is larger. `cachix-action`
+records the store before the build and pushes everything that appeared by the
+end of the job — so the wheels, npm tarballs and sources the build consumed are
+in there too, not only what the output references:
 
-Ageing them out needs no policy either: Cachix evicts least-recently-used
-entries at the limit, and the only version anyone pulls is whichever one the
-consumer currently pins.
+| push | new paths | stored |
+| --- | --- | --- |
+| first ever, `0.20.5` | 1053 | **682 MiB** |
+| `0.20.6` | 18 | 39.2 MiB |
+| `0.21.0`, from a branch dispatch | 11 | 38.4 MiB |
+| `0.21.1` | 21 | 64.6 MiB |
+| **total** | | **≈ 824 MiB** of 5 GB |
 
-The table is read from this cache's own narinfo after the first push (`NarSize`
-and `FileSize` over the closure), not estimated.
+So a version bump costs 40–65 MiB rather than the near-nothing the derivation
+count suggests: it rebuilds a dozen derivations, but one of them is hermes
+itself at 25.9 MiB stored. The path count collapses between versions because
+the npm and PyPI fetches carry over unchanged; the byte count does not collapse
+with it.
+
+That still leaves over 3.8 GiB, well past fifty more versions. Ageing them out
+needs no policy: Cachix evicts least-recently-used entries at the limit, and the
+only version anyone pulls is whichever one the consumer currently pins.
+
+Both tables are read from this cache's own narinfo (`NarSize` and `FileSize`),
+not estimated — the per-push rows by summing the paths each run logged as
+pushed, deduplicated against the earlier runs in the order listed.
 
 ## Acknowledgements
 
@@ -384,7 +398,7 @@ which does the same job for Claude Code. No code was taken from it; the two
 flakes and their workflows have little in common, because the underlying builds
 are nothing alike. Claude Code ships an official prebuilt binary, so that flake
 repackages a download. hermes-agent ships source, so this one caches a real
-compile — 1038 derivations and 409 MiB of cache on the first run. Worth reading
+compile — 1038 derivations and 682 MiB of cache on the first run. Worth reading
 if you want the pattern applied to something that builds quickly.
 
 ## Licence
