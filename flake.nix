@@ -18,7 +18,7 @@
     # whatever mid-development commit the weekly job happens to land on — a
     # commit upstream never declared shippable. `update.yaml` rewrites this line
     # to the newest tag; flake.lock records the rev that tag resolves to.
-    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.9.11";
+    hermes-agent.url = "github:NousResearch/hermes-agent/v2026.9.14";
   };
 
   # Applies only when THIS flake is the top level, e.g.
