@@ -131,7 +131,15 @@ jobs:
         channel: ${{ fromJSON(needs.update.outputs.channels) }}
     steps:
       # The exact commit `update` pushed, not whatever `main` has drifted to.
+      #
+      # `fetch-depth: 0` because checkout defaults to a shallow clone of the one
+      # commit named by `ref`. A push is a fast-forward only if git can reach the
+      # remote tip from what it has locally, and a depth-1 clone has neither the
+      # parents nor the channel ref — so every push is rejected as
+      # non-fast-forward, however honest a fast-forward it actually is. Full
+      # history is what makes the `git push` below need no force.
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.update.outputs.sha }}
+          fetch-depth: 0
       - run: git push origin HEAD:refs/heads/${{ matrix.channel }}
