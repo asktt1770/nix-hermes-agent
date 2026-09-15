@@ -125,10 +125,33 @@ needs writing down. This applies to the consumer's flake as much as to this one.
 
 ### Cache the variant that is actually consumed
 
-`packages.messaging` and `packages.default` (= `full`) are different derivations.
-CI builds `messaging`, because that is what the consumer asks for. If a consumer
-switches to `default`, `tui`, `web` or `minimal`, add it to `build.yaml` — until
-then it would be 3 GiB of cache nobody pulls.
+`packages.messaging` and `packages.default` (= `full`) are siblings, not nested:
+both are `minimal.override { extraDependencyGroups = …; }`, differing only in
+which groups. So neither contains the other's store path, and a cache holding
+one scores nothing for a consumer asking for the other — even though `full`'s
+groups are a strict superset and it therefore does everything `messaging` does.
+
+Everything under them *is* shared. The two build closures have 5412 derivations
+in common. `default` adds 198 on top — 98 wheels, their 98 unpacked forms, a
+venv and a wrapper — and `messaging` keeps two of its own, its venv and its
+wrapper. Even hermes' own 67 MiB build lands on the same path in both, because
+the dependency set is injected by the wrapper rather than baked into the
+compile. CI builds both, and the second one costs those 198 rather than a
+second closure.
+
+Which also means a cache holding `default` is two cheap derivations away from
+serving `messaging`, and vice versa. "Scores nothing" is the literal answer for
+one store path, not the practical cost of guessing wrong.
+
+`default` earns its 198 by being what upstream's NixOS and Home Manager modules
+resolve to when `services.hermes-agent.package` is left alone. A consumer who
+drops the explicit `.messaging` lands on a path no cache has, and finds out by
+waiting an hour.
+
+`tui` and `web` need no entry in `build.yaml`: they are npm builds that do not
+depend on the Python dependency set, so `messaging` already produces their exact
+paths and the cache already serves them. `minimal`, `desktop` and `sandbox` are
+not cached. Add one when something actually pulls it.
 
 ## Updates
 
@@ -326,7 +349,7 @@ free-disk-space step.
 
 ### Where the time actually goes
 
-That 21 minutes is a cold-cache number and does not describe an update. Three
+That 21 minutes is a cold-cache number and does not describe an update. Four
 runs, measured:
 
 | run | total | `nix build` | derivations built |
@@ -334,12 +357,26 @@ runs, measured:
 | first ever, `0.20.5`, empty cache | 21m01s | 4m41s | 1038 |
 | bump to `0.20.6`, cache warm | 3m10s | 2m16s | **12** |
 | same closure again, nothing to do | 1m48s | 46s | 0 |
+| adding `default`, `messaging` warm | 3m22s | 53s + 1m26s | 193 |
 
 Two things follow. The compile was never the expensive part of the first run —
-**14m21s of the 21 went to uploading** 409 MiB to Cachix, which happens once.
+**14m21s of the 21 went to uploading** 682 MiB to Cachix, which happens once.
 And a version bump rebuilds a dozen derivations, not a thousand, because the
 hundreds of npm and PyPI fetches a hermes closure needs carry over unchanged
 between adjacent releases.
+
+The `nix build` column understates the upload, because `cachix-action` runs
+`cachix watch-store` alongside the build and the post step only drains what is
+left. The first run drained for 14m21s after a 4m41s build; the run that added
+`default` drained in 3s after 1m26s. Per byte that is 682 MiB across roughly 19
+minutes against 319.4 MiB across roughly 90 seconds — the first push was six
+times slower and it is not established why. Budget from the measurement, not
+from a rate.
+
+Once cached, `default` costs 11s and 169 MiB of extra download on a run with
+nothing to build — it substitutes 101 paths the `messaging` step did not need.
+Run totals swing by minutes either way on the `free-disk-space` step, which is
+where a no-op run actually spends its time.
 
 So the daily cadence is close to free, and it is self-reinforcing: the longer
 the gap between updates, the more of the closure has moved and the closer the
@@ -347,34 +384,58 @@ run gets to the cold-cache case.
 
 ## What is cached, and what it costs
 
-`packages.x86_64-linux.messaging` only — the one target a consumer asks for.
-Other systems and variants stay exported but unbuilt because nothing pulls them,
-not because of the quota.
+`packages.x86_64-linux.messaging` and `packages.x86_64-linux.default`. Other
+systems stay exported but unbuilt because nothing pulls them, not because of the
+quota.
 
-The quota is nowhere near the constraint it looks like. Cachix does not store
-anything already served by `cache.nixos.org`, and most of a hermes closure is
-exactly that — CPython, glibc, node, the usual base:
+Two different sizes get called "the cache", and the gap between them is about
+sixfold. The first is what a consumer downloads — the runtime closure of
+`messaging`, most of which Cachix never stores because `cache.nixos.org` already
+serves it:
 
 | | paths | size |
 | --- | --- | --- |
 | closure | 551 | 3.29 GiB |
 | already on `cache.nixos.org`, skipped | 430 | 2.89 GiB |
-| **actually stored here** | **121** | **409.3 MiB** uncompressed |
+| **stored here** | **121** | **409.3 MiB** uncompressed |
 | the same, compressed 3.74x | | **109.6 MiB** |
 
-So the *first* version cost about 110 MiB of the free 5 GB tier — roughly 45 of
-them if every version cost the same. None of the later ones do: the bump to
-`0.20.6` rebuilt 12 derivations, the rest of the closure being npm and PyPI
-fetches that carry over between adjacent releases. The real headroom is
-therefore well past 45 versions, by an amount not worth measuring precisely
-while the answer is "not the constraint".
+The second is what the cache actually holds, which is larger. `cachix-action`
+records the store before the build and pushes everything that appeared by the
+end of the job — so the wheels, npm tarballs and sources the build consumed are
+in there too, not only what the output references:
 
-Ageing them out needs no policy either: Cachix evicts least-recently-used
-entries at the limit, and the only version anyone pulls is whichever one the
-consumer currently pins.
+| push | new paths | stored |
+| --- | --- | --- |
+| first ever, `0.20.5` | 1053 | **682 MiB** |
+| `0.20.6` | 18 | 39.2 MiB |
+| `0.21.0`, from a branch dispatch | 11 | 38.4 MiB |
+| `0.21.1` | 21 | 64.6 MiB |
+| first `default`, `0.21.1` | 193 | **319.4 MiB** |
+| **total** | | **≈ 1.1 GiB** of 5 GB |
 
-The table is read from this cache's own narinfo after the first push (`NarSize`
-and `FileSize` over the closure), not estimated.
+So a version bump costs 40–65 MiB rather than the near-nothing the derivation
+count suggests: it rebuilds a dozen derivations, but one of them is hermes
+itself at 25.9 MiB stored. The path count collapses between versions because
+the npm and PyPI fetches carry over unchanged; the byte count does not collapse
+with it.
+
+`default` cost a one-off 319.4 MiB across 193 paths. It brings 98 packages
+`messaging` does not have, of which `voice` — faster-whisper and its
+ctranslate2 / onnxruntime / av / numpy stack — is about three quarters of the
+weight, and both the wheel and its unpacked form get stored. For a consumer who
+actually switches to it, the closure to download goes from 3.29 GiB to 3.91 GiB.
+
+That still leaves over 3.5 GiB, or 40-odd more versions. Expect each to cost
+more than the 40–65 MiB above, since the dependency surface is now nearly twice
+as wide and more of it moves per release; how much more is not yet measured.
+Ageing them out needs no policy: Cachix evicts least-recently-used entries at
+the limit, and the only version anyone pulls is whichever one the consumer
+currently pins.
+
+Every figure here is read from this cache's own narinfo (`NarSize` and
+`FileSize`), not estimated — the per-push rows by summing the paths each run
+logged as pushed, deduplicated against the earlier runs in the order listed.
 
 ## Acknowledgements
 
@@ -384,7 +445,7 @@ which does the same job for Claude Code. No code was taken from it; the two
 flakes and their workflows have little in common, because the underlying builds
 are nothing alike. Claude Code ships an official prebuilt binary, so that flake
 repackages a download. hermes-agent ships source, so this one caches a real
-compile — 1038 derivations and 409 MiB of cache on the first run. Worth reading
+compile — 1038 derivations and 682 MiB of cache on the first run. Worth reading
 if you want the pattern applied to something that builds quickly.
 
 ## Licence
