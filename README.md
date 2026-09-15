@@ -365,9 +365,13 @@ And a version bump rebuilds a dozen derivations, not a thousand, because the
 hundreds of npm and PyPI fetches a hermes closure needs carry over unchanged
 between adjacent releases.
 
-The last row is the run that added `default`. Its 193 derivations and 319.4 MiB
-of upload took 1m26s against the 14m21s the first run's 1053 paths took, so the
-cost of that first push was per-path overhead rather than bandwidth.
+The `nix build` column understates the upload, because `cachix-action` runs
+`cachix watch-store` alongside the build and the post step only drains what is
+left. The first run drained for 14m21s after a 4m41s build; the run that added
+`default` drained in 3s after 1m26s. Per byte that is 682 MiB across roughly 19
+minutes against 319.4 MiB across roughly 90 seconds — the first push was six
+times slower and it is not established why. Budget from the measurement, not
+from a rate.
 
 Once cached, `default` costs 11s and 169 MiB of extra download on a run with
 nothing to build — it substitutes 101 paths the `messaging` step did not need.
