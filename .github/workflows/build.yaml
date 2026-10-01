@@ -77,13 +77,34 @@ jobs:
           name: nix-hermes-agent
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      # `messaging` — not `default` — is the variant the consumer asks for
-      # (Iris: `modules/hermes/default.nix`, `.packages.${system}.messaging`).
-      # They are different derivations, so caching `default` here would build
-      # 3 GiB that nothing ever pulls.
+      # `messaging` is the variant the consumer asks for (Iris:
+      # `modules/hermes/default.nix`, `.packages.${system}.messaging`), so it
+      # goes first and it is the one whose failure stops the run.
       #
       # No `--max-jobs` cap: this runner has 16 GB against the 7.7 GB box that
       # needs the cap. If a run ever dies on memory, `--max-jobs 2` is the first
       # thing to try, and it is worth recording that it happened.
       - name: Build messaging (x86_64-linux)
         run: nix build -L '.#messaging'
+
+      # `default` (= `full`) is a second override of the same `minimal`, not a
+      # wrapper around `messaging`. The two closures share 5412 derivations;
+      # `default` adds 198 on top (98 wheels, their 98 unpacked forms, a venv
+      # and a wrapper) and `messaging` keeps 2 of its own, its venv and its
+      # wrapper. So this step pays for the wider dependency groups and reuses
+      # everything else verbatim.
+      #
+      # Built because `default` is what upstream's NixOS and Home Manager
+      # modules resolve to when `services.hermes-agent.package` is left alone.
+      # Uncached, that default means an hour of local compile on the host this
+      # repo exists for.
+      #
+      # `continue-on-error` because `promote` gates the channel branches on this
+      # job, and those channels only ever point a consumer at the `messaging`
+      # closure. A break in a group nobody has switched to — `matrix` pulls
+      # `python-olm`, `voice` pulls `ctranslate2` and `onnxruntime`, all binary
+      # wheels leaning on auto-patchelf — must not hold back a release that
+      # built. The step still shows as failed in the run, which is the signal.
+      - name: Build default (x86_64-linux)
+        continue-on-error: true
+        run: nix build -L '.#default'
